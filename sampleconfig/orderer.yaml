@@ -41,6 +41,9 @@ General:
     # per: fabric/docs/Setup/logging-control.md
     LogLevel: info
 
+    # Log Format:  The format string to use when logging.  Especially useful to disable color logging
+    LogFormat: '%{color}%{time:2006-01-02 15:04:05.000 MST} [%{module}] %{shortfunc} -> %{level:.4s} %{id:03x}%{color:reset} %{message}'
+
     # Genesis method: The method by which the genesis block for the orderer
     # system channel is specified. Available options are "provisional", "file":
     #  - provisional: Utilizes a genesis profile, specified by GenesisProfile,
@@ -67,7 +70,7 @@ General:
 
     # LocalMSPID is the identity to register the local MSP material with the MSP
     # manager. IMPORTANT: The local MSP ID of an orderer needs to match the MSP
-    # ID of one of the organizations defined in the orderer system channel's 
+    # ID of one of the organizations defined in the orderer system channel's
     # /Channel/Orderer configuration. The sample organization defined in the
     # sample configuration provided has an MSP ID of "DEFAULT".
     LocalMSPID: DEFAULT
@@ -221,3 +224,23 @@ Kafka:
         # following "File" key and specify the file name from which to load the
         # value of RootCAs.
         #File: path/to/RootCAs
+    # Kafka version of the Kafka cluster brokers (defaults to 0.9.0.1)
+    Version:
+        #
+
+################################################################################
+#
+#   Debug Configuration
+#
+#   - This controls the debugging options for the orderer
+#
+################################################################################
+Debug:
+
+    # BroadcasTraceDir when set will cause each request to the Broadcast service
+    # for this orderer to be written to a file in this directory
+    BroadcastTraceDir:
+
+    # DeliverTraceDir when set will cause each request to the Deliver service
+    # for this orderer to be written to a file in this directory
+    DeliverTraceDir:

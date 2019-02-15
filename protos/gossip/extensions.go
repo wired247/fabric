@@ -18,6 +18,7 @@ package gossip
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"fmt"
 
@@ -521,7 +522,7 @@ func (m *SignedGossipMessage) String() string {
 		var isSimpleMsg bool
 		if m.GetStateResponse() != nil {
 			gMsg = fmt.Sprintf("StateResponse with %d items", len(m.GetStateResponse().Payloads))
-		} else if m.IsDataMsg() {
+		} else if m.IsDataMsg() && m.GetDataMsg().Payload != nil {
 			gMsg = m.GetDataMsg().Payload.toString()
 		} else if m.IsDataUpdate() {
 			update := m.GetDataUpdate()
@@ -535,11 +536,33 @@ func (m *SignedGossipMessage) String() string {
 			isSimpleMsg = true
 		}
 		if !isSimpleMsg {
-			desc := fmt.Sprintf("Channel: %v, nonce: %d, tag: %s", m.Channel, m.Nonce, GossipMessage_Tag_name[int32(m.Tag)])
+			desc := fmt.Sprintf("Channel: %s, nonce: %d, tag: %s", string(m.Channel), m.Nonce, GossipMessage_Tag_name[int32(m.Tag)])
 			gMsg = fmt.Sprintf("%s %s", desc, gMsg)
 		}
 	}
 	return fmt.Sprintf("GossipMessage: %v, Envelope: %s", gMsg, env)
+}
+
+func (dd *DataRequest) FormattedDigests() []string {
+	if dd.MsgType == PullMsgType_IDENTITY_MSG {
+		return digestsToHex(dd.Digests)
+	}
+	return dd.Digests
+}
+
+func (dd *DataDigest) FormattedDigests() []string {
+	if dd.MsgType == PullMsgType_IDENTITY_MSG {
+		return digestsToHex(dd.Digests)
+	}
+	return dd.Digests
+}
+
+func digestsToHex(digests []string) []string {
+	a := make([]string, len(digests))
+	for i, dig := range digests {
+		a[i] = hex.EncodeToString([]byte(dig))
+	}
+	return a
 }
 
 // Abs returns abs(a-b)

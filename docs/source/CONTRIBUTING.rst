@@ -1,10 +1,10 @@
 Contributions Welcome!
 ======================
 
-We welcome contributions to the Hyperledger Project in many forms, and
+We welcome contributions to Hyperledger in many forms, and
 there's always plenty to do!
 
-First things first, please review the Hyperledger Project's `Code of
+First things first, please review the Hyperledger `Code of
 Conduct <https://wiki.hyperledger.org/community/hyperledger-project-code-of-conduct>`__
 before participating. It is important that we keep things civil.
 
@@ -111,7 +111,7 @@ Discussion of the proposed feature should be conducted in the JIRA issue itself,
 so that we have a consistent pattern within our community as to where to find
 design discussion.
 
-Getting the support of three or more of the Fabric maintainers for the new
+Getting the support of three or more of the Hyperledger Fabric maintainers for the new
 feature will greatly enhance the probability that the feature's related CRs
 will be merged.
 
@@ -132,10 +132,10 @@ you should be ready to set up your local development
 Next, try :doc:`building the project <dev-setup/build>` in your local
 development environment to ensure that everything is set up correctly.
 
-:doc:`Logging control <Setup/logging-control>` describes how to tweak
-the logging levels of various components within the Fabric. Finally,
-every source file needs to include a `license header
-<https://github.com/hyperledger/fabric/blob/master/docs/source/dev-setup/headers.txt>`__: modified to include a copyright
+The :doc:`logging-control` document describes how to tweak
+the logging levels of various components within Hyperledger Fabric. Finally,
+every source file needs to include a
+`license header <https://github.com/hyperledger/fabric/blob/master/docs/source/dev-setup/headers.txt>`__: modified to include a copyright
 statement for the principle author(s).
 
 What makes a good change request?
@@ -235,8 +235,7 @@ Maintainers
 The project's :doc:`maintainers <MAINTAINERS>` are responsible for
 reviewing and merging all patches submitted for review and they guide
 the over-all technical direction of the project within the guidelines
-established by the Hyperledger Project's Technical Steering Committee
-(TSC).
+established by the Hyperledger Technical Steering Committee (TSC).
 
 Becoming a maintainer
 ~~~~~~~~~~~~~~~~~~~~~
@@ -248,15 +247,13 @@ designate an initial set of maintainers that will be approved by the
 top-level project's existing maintainers when the project is first
 approved. The project's maintainers will, from time-to-time, consider
 adding or removing a maintainer. An existing maintainer can submit a
-change set to the :doc:`MAINTAINERS.rst <MAINTAINERS>` file. If there are
-less than eight maintainers, a majority of the existing maintainers on
-that project are required to merge the change set. If there are more
-than eight existing maintainers, then if five or more of the maintainers
-concur with the proposal, the change set is then merged and the
-individual is added to (or alternatively, removed from) the maintainers
-group. explicit resignation, some infraction of the `code of
-conduct <https://wiki.hyperledger.org/community/hyperledger-project-code-of-conduct>`__
-or consistently demonstrating poor judgement.
+change set to the :doc:`MAINTAINERS.rst <MAINTAINERS>` file. A nominated
+Contributor may become a Maintainer by a majority approval of the proposal
+by the existing Maintainers. Once approved, the change set is then merged
+and the individual is added to (or alternatively, removed from) the maintainers
+group. Maintainers may be removed by explicit resignation, or for some
+infraction of the `code of conduct <https://wiki.hyperledger.org/community/hyperledger-project-code-of-conduct>`__
+or by consistently demonstrating poor judgement.
 
 Legal stuff
 -----------
@@ -287,4 +284,3 @@ local git repository using ``git commit -s``.
 
 .. Licensed under Creative Commons Attribution 4.0 International License
    https://creativecommons.org/licenses/by/4.0/
-

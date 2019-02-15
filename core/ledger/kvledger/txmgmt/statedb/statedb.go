@@ -35,6 +35,8 @@ type VersionedDBProvider interface {
 type VersionedDB interface {
 	// GetState gets the value for given namespace and key. For a chaincode, the namespace corresponds to the chaincodeId
 	GetState(namespace string, key string) (*VersionedValue, error)
+	// GetVersion gets the version for given namespace and key. For a chaincode, the namespace corresponds to the chaincodeId
+	GetVersion(namespace string, key string) (*version.Height, error)
 	// GetStateMultipleKeys gets the values for multiple keys in a single call
 	GetStateMultipleKeys(namespace string, keys []string) ([]*VersionedValue, error)
 	// GetStateRangeScanIterator returns an iterator that contains all the key-values between given key ranges.
@@ -54,10 +56,20 @@ type VersionedDB interface {
 	// ValidateKey tests whether the key is supported by the db implementation.
 	// For instance, leveldb supports any bytes for the key while the couchdb supports only valid utf-8 string
 	ValidateKey(key string) error
+	// BytesKeySuppoted returns true if the implementation (underlying db) supports the any bytes to be used as key.
+	// For instance, leveldb supports any bytes for the key while the couchdb supports only valid utf-8 string
+	BytesKeySuppoted() bool
 	// Open opens the db
 	Open() error
 	// Close closes the db
 	Close()
+}
+
+//BulkOptimizable interface provides additional functions for
+//databases capable of batch operations
+type BulkOptimizable interface {
+	LoadCommittedVersions(keys []*CompositeKey)
+	ClearCachedVersions()
 }
 
 // CompositeKey encloses Namespace and Key components
@@ -78,7 +90,7 @@ type VersionedKV struct {
 	VersionedValue
 }
 
-// ResultsIterator hepls in iterates over query results
+// ResultsIterator helps in iterates over query results
 type ResultsIterator interface {
 	Next() (QueryResult, error)
 	Close()
@@ -123,14 +135,12 @@ func (batch *UpdateBatch) Put(ns string, key string, value []byte, version *vers
 	if value == nil {
 		panic("Nil value not allowed")
 	}
-	nsUpdates := batch.getOrCreateNsUpdates(ns)
-	nsUpdates.m[key] = &VersionedValue{value, version}
+	batch.Update(ns, key, &VersionedValue{value, version})
 }
 
 // Delete deletes a Key and associated value
 func (batch *UpdateBatch) Delete(ns string, key string, version *version.Height) {
-	nsUpdates := batch.getOrCreateNsUpdates(ns)
-	nsUpdates.m[key] = &VersionedValue{nil, version}
+	batch.Update(ns, key, &VersionedValue{nil, version})
 }
 
 // Exists checks whether the given key exists in the batch
@@ -152,6 +162,11 @@ func (batch *UpdateBatch) GetUpdatedNamespaces() []string {
 		i++
 	}
 	return namespaces
+}
+
+// Update updates the batch with a latest entry for a namespace and a key
+func (batch *UpdateBatch) Update(ns string, key string, vv *VersionedValue) {
+	batch.getOrCreateNsUpdates(ns).m[key] = vv
 }
 
 // GetUpdates returns all the updates for a namespace

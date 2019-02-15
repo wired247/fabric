@@ -76,7 +76,8 @@ func TestConnection_Correct(t *testing.T) {
 func TestConnection_WrongAddress(t *testing.T) {
 	testutil.SetupTestConfig()
 	viper.Set("ledger.blockchain.deploy-system-chaincode", "false")
-	peerAddress := GetPeerTestingAddress("7052")
+	//some random port
+	peerAddress := GetPeerTestingAddress("10287")
 	var tmpConn *grpc.ClientConn
 	var err error
 	if TLSEnabled() {
@@ -123,7 +124,7 @@ func TestCASupport(t *testing.T) {
 	cas.AppRootCAsByChain["channel1"] = [][]byte{rootCAs[0]}
 	cas.AppRootCAsByChain["channel2"] = [][]byte{rootCAs[1]}
 	cas.AppRootCAsByChain["channel3"] = [][]byte{rootCAs[2]}
-	cas.OrdererRootCAsByChain["channel1"] = [][]byte{(rootCAs[3])}
+	cas.OrdererRootCAsByChain["channel1"] = [][]byte{rootCAs[3]}
 	cas.OrdererRootCAsByChain["channel2"] = [][]byte{rootCAs[4]}
 	cas.ServerRootCAs = [][]byte{rootCAs[5]}
 	cas.ClientRootCAs = [][]byte{rootCAs[5]}

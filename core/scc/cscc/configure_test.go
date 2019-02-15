@@ -29,6 +29,7 @@ import (
 	"github.com/hyperledger/fabric/common/mocks/scc"
 	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/core/chaincode"
+	"github.com/hyperledger/fabric/core/chaincode/accesscontrol"
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 	"github.com/hyperledger/fabric/core/common/sysccprovider"
 	"github.com/hyperledger/fabric/core/deliverservice"
@@ -55,7 +56,7 @@ type mockDeliveryClient struct {
 
 // StartDeliverForChannel dynamically starts delivery of new blocks from ordering service
 // to channel peers.
-func (ds *mockDeliveryClient) StartDeliverForChannel(chainID string, ledgerInfo blocksprovider.LedgerInfo) error {
+func (ds *mockDeliveryClient) StartDeliverForChannel(chainID string, ledgerInfo blocksprovider.LedgerInfo, f func()) error {
 	return nil
 }
 
@@ -180,7 +181,8 @@ func TestConfigerInvokeJoinChainCorrectParams(t *testing.T) {
 		return &pb.PeerEndpoint{Id: &pb.PeerID{Name: "cscctestpeer"}, Address: peerEndpoint}, nil
 	}
 	ccStartupTimeout := time.Duration(30000) * time.Millisecond
-	chaincode.NewChaincodeSupport(getPeerEndpoint, false, ccStartupTimeout)
+	ca, _ := accesscontrol.NewCA()
+	chaincode.NewChaincodeSupport(getPeerEndpoint, false, ccStartupTimeout, ca)
 
 	// Init the policy checker
 	policyManagerGetter := &policymocks.MockChannelPolicyManagerGetter{
@@ -200,7 +202,8 @@ func TestConfigerInvokeJoinChainCorrectParams(t *testing.T) {
 	identity, _ := mgmt.GetLocalSigningIdentityOrPanic().Serialize()
 	messageCryptoService := peergossip.NewMCS(&mocks.ChannelPolicyManagerGetter{}, localmsp.NewSigner(), mgmt.NewDeserializersManager())
 	secAdv := peergossip.NewSecurityAdvisor(mgmt.NewDeserializersManager())
-	service.InitGossipServiceCustomDeliveryFactory(identity, peerEndpoint, nil, &mockDeliveryClientFactory{}, messageCryptoService, secAdv, nil)
+	err := service.InitGossipServiceCustomDeliveryFactory(identity, peerEndpoint, nil, &mockDeliveryClientFactory{}, messageCryptoService, secAdv, nil)
+	assert.NoError(t, err)
 
 	// Successful path for JoinChain
 	blockBytes := mockConfigBlock()

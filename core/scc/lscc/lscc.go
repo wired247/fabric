@@ -50,7 +50,7 @@ const (
 	//CHAINCODETABLE prefix for chaincode tables
 	CHAINCODETABLE = "chaincodes"
 
-	//chaincode lifecyle commands
+	//chaincode lifecycle commands
 
 	//INSTALL install command
 	INSTALL = "install"
@@ -138,7 +138,7 @@ func (t TXNotFoundErr) Error() string {
 	return fmt.Sprintf("transaction not found %s", string(t))
 }
 
-//InvalidDeploymentSpecErr invalide chaincode deployment spec error
+//InvalidDeploymentSpecErr invalid chaincode deployment spec error
 type InvalidDeploymentSpecErr string
 
 func (f InvalidDeploymentSpecErr) Error() string {
@@ -721,7 +721,7 @@ func (lscc *LifeCycleSysCC) Invoke(stub shim.ChaincodeStubInterface) pb.Response
 
 		// 2. check local MSP Admins policy
 		if err = lscc.policyChecker.CheckPolicyNoChannel(mgmt.Admins, sp); err != nil {
-			return shim.Error(fmt.Sprintf("Authorization for INSTALL on %s has been denied with error %s", args[1], err))
+			return shim.Error(fmt.Sprintf("Authorization for INSTALL has been denied (error-%s)", err))
 		}
 
 		depSpec := args[1]
@@ -739,7 +739,7 @@ func (lscc *LifeCycleSysCC) Invoke(stub shim.ChaincodeStubInterface) pb.Response
 		// TODO: add access control check
 		// once the instantiation process will be completed.
 
-		//chain the chaincode shoud be associated with. It
+		//chain the chaincode should be associated with. It
 		//should be created with a register call
 		chainname := string(args[1])
 

@@ -20,19 +20,28 @@ import (
 	"bytes"
 	"errors"
 	"testing"
+	"time"
 
+	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric/msp"
 	cb "github.com/hyperledger/fabric/protos/common"
 	mb "github.com/hyperledger/fabric/protos/msp"
-
-	"github.com/golang/protobuf/proto"
+	logging "github.com/op/go-logging"
 	"github.com/stretchr/testify/assert"
 )
+
+func init() {
+	logging.SetLevel(logging.DEBUG, "")
+}
 
 var invalidSignature = []byte("badsigned")
 
 type mockIdentity struct {
 	idBytes []byte
+}
+
+func (id *mockIdentity) ExpiresAt() time.Time {
+	return time.Time{}
 }
 
 func (id *mockIdentity) SatisfiesPrincipal(p *mb.MSPPrincipal) error {

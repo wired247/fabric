@@ -10,6 +10,7 @@
 #   - checks - runs all tests/checks
 #   - desk-check - runs linters and verify to test changed packages
 #   - configtxgen - builds a native configtxgen binary
+#   - configtxlator - builds a native configtxlator binary
 #   - cryptogen  -  builds a native cryptogen binary
 #   - peer - builds a native fabric peer binary
 #   - orderer - builds a native fabric orderer binary
@@ -22,7 +23,7 @@
 #   - behave-deps - ensures pre-requisites are available for running behave manually
 #   - gotools - installs go tools like golint
 #   - linter - runs all code checks
-#   - license - checks go sourrce files for Apache license header
+#   - license - checks go source files for Apache license header
 #   - native - ensures all native binaries are available
 #   - docker[-clean] - ensures all docker images are available[/cleaned]
 #   - peer-docker[-clean] - ensures the peer container is available[/cleaned]
@@ -30,13 +31,14 @@
 #   - tools-docker[-clean] - ensures the tools container is available[/cleaned]
 #   - protos - generate all protobuf artifacts based on .proto files
 #   - clean - cleans the build area
-#   - dist-clean - superset of 'clean' that also removes persistent state
+#   - clean-all - superset of 'clean' that also removes persistent state
+#   - dist-clean - clean release packages for all target platforms
 #   - unit-test-clean - cleans unit test state (particularly from docker)
 
 PROJECT_NAME   = hyperledger/fabric
-BASE_VERSION   = 1.0.0-rc1
-PREV_VERSION   = 1.0.0-beta
-IS_RELEASE     = false
+BASE_VERSION = 1.1.0
+PREV_VERSION = 1.0.0
+IS_RELEASE = false
 
 ifneq ($(IS_RELEASE),true)
 EXTRA_VERSION ?= snapshot-$(shell git rev-parse --short HEAD)
@@ -49,7 +51,7 @@ PKGNAME = github.com/$(PROJECT_NAME)
 CGO_FLAGS = CGO_CFLAGS=" "
 ARCH=$(shell uname -m)
 MARCH=$(shell go env GOOS)-$(shell go env GOARCH)
-CHAINTOOL_RELEASE=v0.10.3
+CHAINTOOL_RELEASE=1.0.0
 BASEIMAGE_RELEASE=$(shell cat ./.baseimage-release)
 
 # defined in common/metadata/metadata.go
@@ -63,7 +65,7 @@ GO_LDFLAGS = $(patsubst %,-X $(PKGNAME)/common/metadata.%,$(METADATA_VAR))
 
 GO_TAGS ?=
 
-CHAINTOOL_URL ?= https://github.com/hyperledger/fabric-chaintool/releases/download/$(CHAINTOOL_RELEASE)/chaintool
+CHAINTOOL_URL ?= https://nexus.hyperledger.org/content/repositories/releases/org/hyperledger/fabric/hyperledger-fabric/chaintool-$(CHAINTOOL_RELEASE)/hyperledger-fabric-chaintool-$(CHAINTOOL_RELEASE).jar
 
 export GO_LDFLAGS
 
@@ -79,12 +81,13 @@ PROJECT_FILES = $(shell git ls-files  | grep -v ^test | grep -v ^unit-test | \
 	grep -v ^bddtests | grep -v ^docs | grep -v _test.go$ | grep -v .md$ | \
 	grep -v ^.git | grep -v ^examples | grep -v ^devenv | grep -v .png$ | \
 	grep -v ^LICENSE )
+RELEASE_TEMPLATES = $(shell git ls-files | grep "release/templates")
 IMAGES = peer orderer ccenv javaenv buildenv testenv zookeeper kafka couchdb tools
 RELEASE_PLATFORMS = windows-amd64 darwin-amd64 linux-amd64 linux-ppc64le linux-s390x
-RELEASE_PKGS = configtxgen cryptogen configtxlator
+RELEASE_PKGS = configtxgen cryptogen configtxlator peer orderer
 
 pkgmap.cryptogen      := $(PKGNAME)/common/tools/cryptogen
-pkgmap.configtxgen    := $(PKGNAME)/common/configtx/tool/configtxgen
+pkgmap.configtxgen    := $(PKGNAME)/common/tools/configtxgen
 pkgmap.configtxlator  := $(PKGNAME)/common/tools/configtxlator
 pkgmap.peer           := $(PKGNAME)/peer
 pkgmap.orderer        := $(PKGNAME)/orderer
@@ -184,7 +187,7 @@ linter: buildenv
 %/chaintool: Makefile
 	@echo "Installing chaintool"
 	@mkdir -p $(@D)
-	curl -L $(CHAINTOOL_URL) > $@
+	curl -fL $(CHAINTOOL_URL) > $@
 	chmod +x $@
 
 # We (re)build a package within a docker context but persist the $GOPATH/pkg
@@ -252,6 +255,7 @@ build/image/couchdb/payload:	images/couchdb/docker-entrypoint.sh \
 				images/couchdb/vm.args
 build/image/tools/payload:      build/docker/bin/cryptogen \
 	                        build/docker/bin/configtxgen \
+	                        build/docker/bin/configtxlator \
 				build/docker/bin/peer \
 				build/sampleconfig.tar.bz2
 
@@ -344,6 +348,18 @@ release/%/bin/cryptogen: $(PROJECT_FILES)
 	mkdir -p $(@D)
 	$(CGO_FLAGS) GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o $(abspath $@) -tags "$(GO_TAGS)" -ldflags "$(GO_LDFLAGS)" $(pkgmap.$(@F))
 
+release/%/bin/orderer: $(PROJECT_FILES)
+	@echo "Building $@ for $(GOOS)-$(GOARCH)"
+	mkdir -p $(@D)
+	$(CGO_FLAGS) GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o $(abspath $@) -tags "$(GO_TAGS)" -ldflags "$(GO_LDFLAGS)" $(pkgmap.$(@F))
+
+release/%/bin/peer: GO_LDFLAGS = $(patsubst %,-X $(PKGNAME)/common/metadata.%,$(METADATA_VAR))
+
+release/%/bin/peer: $(PROJECT_FILES)
+	@echo "Building $@ for $(GOOS)-$(GOARCH)"
+	mkdir -p $(@D)
+	$(CGO_FLAGS) GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o $(abspath $@) -tags "$(GO_TAGS)" -ldflags "$(GO_LDFLAGS)" $(pkgmap.$(@F))
+
 release/%/install: $(PROJECT_FILES)
 	mkdir -p $(@D)/bin
 	@cat $(@D)/../templates/get-docker-images.in \
@@ -353,27 +369,31 @@ release/%/install: $(PROJECT_FILES)
 		| sed -e 's/_BASE_DOCKER_TAG_/$(BASE_DOCKER_TAG)/g' \
 		> $(@D)/bin/get-docker-images.sh
 		@chmod +x $(@D)/bin/get-docker-images.sh
+	@cat $(@D)/../templates/get-byfn.in \
+		| sed -e 's/_VERSION_/$(PROJECT_VERSION)/g' \
+		> $(@D)/bin/get-byfn.sh
+		@chmod +x $(@D)/bin/get-byfn.sh
 
 .PHONY: dist
 dist: dist-clean release
-	cd release/$(MARCH) && tar -czvf hyperledger-fabric-$(MARCH).$(BASE_VERSION).tar.gz *
+	cd release/$(MARCH) && tar -czvf hyperledger-fabric-$(MARCH).$(PROJECT_VERSION).tar.gz *
 
 dist-all: dist-clean release-all $(patsubst %,dist/%, $(RELEASE_PLATFORMS))
 
 dist/windows-amd64:
-	cd release/windows-amd64 && tar -czvf hyperledger-fabric-windows-amd64.$(BASE_VERSION).tar.gz *
+	cd release/windows-amd64 && tar -czvf hyperledger-fabric-windows-amd64.$(PROJECT_VERSION).tar.gz *
 
 dist/darwin-amd64:
-	cd release/darwin-amd64 && tar -czvf hyperledger-fabric-darwin-amd64.$(BASE_VERSION).tar.gz *
+	cd release/darwin-amd64 && tar -czvf hyperledger-fabric-darwin-amd64.$(PROJECT_VERSION).tar.gz *
 
 dist/linux-amd64:
-	cd release/linux-amd64 && tar -czvf hyperledger-fabric-linux-amd64.$(BASE_VERSION).tar.gz *
+	cd release/linux-amd64 && tar -czvf hyperledger-fabric-linux-amd64.$(PROJECT_VERSION).tar.gz *
 
 dist/linux-ppc64le:
-	cd release/linux-ppc64le && tar -czvf hyperledger-fabric-linux-ppc64le.$(BASE_VERSION).tar.gz *
+	cd release/linux-ppc64le && tar -czvf hyperledger-fabric-linux-ppc64le.$(PROJECT_VERSION).tar.gz *
 
 dist/linux-s390x:
-	cd release/linux-s390x && tar -czvf hyperledger-fabric-linux-s390x.$(BASE_VERSION).tar.gz *
+	cd release/linux-s390x && tar -czvf hyperledger-fabric-linux-s390x.$(PROJECT_VERSION).tar.gz *
 
 .PHONY: protos
 protos: buildenv
@@ -396,11 +416,11 @@ clean-all: clean gotools-clean dist-clean release-clean unit-test-clean
 
 .PHONY: dist-clean
 dist-clean:
-	-@rm -rf release/windows-amd64/hyperledger-fabric-windows-amd64.$(BASE_VERSION).tar.gz ||:
-	-@rm -rf release/darwin-amd64/hyperledger-fabric-darwin-amd64.$(BASE_VERSION).tar.gz ||:
-	-@rm -rf release/linux-amd64/hyperledger-fabric-linux-amd64.$(BASE_VERSION).tar.gz ||:
-	-@rm -rf release/linux-ppc64le/hyperledger-fabric-linux-ppc64le.$(BASE_VERSION).tar.gz ||:
-	-@rm -rf release/linux-s390x/hyperledger-fabric-linux-s390x.$(BASE_VERSION).tar.gz ||:
+	-@rm -rf release/windows-amd64/hyperledger-fabric-windows-amd64.$(PROJECT_VERSION).tar.gz ||:
+	-@rm -rf release/darwin-amd64/hyperledger-fabric-darwin-amd64.$(PROJECT_VERSION).tar.gz ||:
+	-@rm -rf release/linux-amd64/hyperledger-fabric-linux-amd64.$(PROJECT_VERSION).tar.gz ||:
+	-@rm -rf release/linux-ppc64le/hyperledger-fabric-linux-ppc64le.$(PROJECT_VERSION).tar.gz ||:
+	-@rm -rf release/linux-s390x/hyperledger-fabric-linux-s390x.$(PROJECT_VERSION).tar.gz ||:
 
 %-release-clean:
 	$(eval TARGET = ${patsubst %-release-clean,%,${@}})

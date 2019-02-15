@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-                 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package service
@@ -24,15 +14,18 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hyperledger/fabric/common/config"
+	"github.com/hyperledger/fabric/common/config/channel"
 	"github.com/hyperledger/fabric/common/localmsp"
 	"github.com/hyperledger/fabric/core/deliverservice"
 	"github.com/hyperledger/fabric/core/deliverservice/blocksprovider"
+	"github.com/hyperledger/fabric/core/ledger"
+	"github.com/hyperledger/fabric/core/transientstore"
 	"github.com/hyperledger/fabric/gossip/api"
 	gossipCommon "github.com/hyperledger/fabric/gossip/common"
 	"github.com/hyperledger/fabric/gossip/election"
 	"github.com/hyperledger/fabric/gossip/gossip"
 	"github.com/hyperledger/fabric/gossip/identity"
+	"github.com/hyperledger/fabric/gossip/privdata"
 	"github.com/hyperledger/fabric/gossip/state"
 	"github.com/hyperledger/fabric/gossip/util"
 	"github.com/hyperledger/fabric/msp/mgmt"
@@ -48,6 +41,17 @@ import (
 
 func init() {
 	util.SetupTestLogging()
+}
+
+type mockTransientStore struct {
+}
+
+func (*mockTransientStore) Persist(txid string, endorserid string, endorsementBlkHt uint64, privateSimulationResults []byte) error {
+	panic("implement me")
+}
+
+func (*mockTransientStore) GetSelfSimulatedTxPvtRWSetByTxid(txid string) (*transientstore.EndorserPvtSimulationResults, error) {
+	panic("implement me")
 }
 
 func TestInitGossipService(t *testing.T) {
@@ -66,12 +70,12 @@ func TestInitGossipService(t *testing.T) {
 	wg.Add(10)
 	for i := 0; i < 10; i++ {
 		go func() {
+			defer wg.Done()
 			messageCryptoService := peergossip.NewMCS(&mocks.ChannelPolicyManagerGetter{}, localmsp.NewSigner(), mgmt.NewDeserializersManager())
 			secAdv := peergossip.NewSecurityAdvisor(mgmt.NewDeserializersManager())
-			InitGossipService(identity, "localhost:5611", grpcServer, messageCryptoService,
+			err := InitGossipService(identity, "localhost:5611", grpcServer, messageCryptoService,
 				secAdv, nil)
-
-			wg.Done()
+			assert.NoError(t, err)
 		}()
 	}
 	wg.Wait()
@@ -126,7 +130,7 @@ func TestLeaderElectionWithDeliverClient(t *testing.T) {
 		gossips[i].(*gossipServiceImpl).deliveryFactory = deliverServiceFactory
 		deliverServiceFactory.service.running[channelName] = false
 
-		gossips[i].InitializeChannel(channelName, &mockLedgerInfo{1}, []string{"localhost:5005"})
+		gossips[i].InitializeChannel(channelName, &mockLedgerInfo{1}, &mockTransientStore{}, []string{"localhost:5005"})
 		service, exist := gossips[i].(*gossipServiceImpl).leaderElection[channelName]
 		assert.True(t, exist, "Leader election service should be created for peer %d and channel %s", i, channelName)
 		services[i] = &electionService{nil, false, 0}
@@ -182,7 +186,7 @@ func TestWithStaticDeliverClientLeader(t *testing.T) {
 	for i := 0; i < n; i++ {
 		gossips[i].(*gossipServiceImpl).deliveryFactory = deliverServiceFactory
 		deliverServiceFactory.service.running[channelName] = false
-		gossips[i].InitializeChannel(channelName, &mockLedgerInfo{1}, []string{"localhost:5005"})
+		gossips[i].InitializeChannel(channelName, &mockLedgerInfo{1}, &mockTransientStore{}, []string{"localhost:5005"})
 	}
 
 	for i := 0; i < n; i++ {
@@ -193,7 +197,7 @@ func TestWithStaticDeliverClientLeader(t *testing.T) {
 	channelName = "chanB"
 	for i := 0; i < n; i++ {
 		deliverServiceFactory.service.running[channelName] = false
-		gossips[i].InitializeChannel(channelName, &mockLedgerInfo{1}, []string{"localhost:5005"})
+		gossips[i].InitializeChannel(channelName, &mockLedgerInfo{1}, &mockTransientStore{}, []string{"localhost:5005"})
 	}
 
 	for i := 0; i < n; i++ {
@@ -230,7 +234,7 @@ func TestWithStaticDeliverClientNotLeader(t *testing.T) {
 	for i := 0; i < n; i++ {
 		gossips[i].(*gossipServiceImpl).deliveryFactory = deliverServiceFactory
 		deliverServiceFactory.service.running[channelName] = false
-		gossips[i].InitializeChannel(channelName, &mockLedgerInfo{1}, []string{"localhost:5005"})
+		gossips[i].InitializeChannel(channelName, &mockLedgerInfo{1}, &mockTransientStore{}, []string{"localhost:5005"})
 	}
 
 	for i := 0; i < n; i++ {
@@ -267,7 +271,7 @@ func TestWithStaticDeliverClientBothStaticAndLeaderElection(t *testing.T) {
 	for i := 0; i < n; i++ {
 		gossips[i].(*gossipServiceImpl).deliveryFactory = deliverServiceFactory
 		assert.Panics(t, func() {
-			gossips[i].InitializeChannel(channelName, &mockLedgerInfo{1}, []string{"localhost:5005"})
+			gossips[i].InitializeChannel(channelName, &mockLedgerInfo{1}, &mockTransientStore{}, []string{"localhost:5005"})
 		}, "Dynamic leader lection based and static connection to ordering service can't exist simultaniosly")
 	}
 
@@ -286,7 +290,7 @@ type mockDeliverService struct {
 	running map[string]bool
 }
 
-func (ds *mockDeliverService) StartDeliverForChannel(chainID string, ledgerInfo blocksprovider.LedgerInfo) error {
+func (ds *mockDeliverService) StartDeliverForChannel(chainID string, ledgerInfo blocksprovider.LedgerInfo, finalizer func()) error {
 	ds.running[chainID] = true
 	return nil
 }
@@ -301,6 +305,14 @@ func (ds *mockDeliverService) Stop() {
 
 type mockLedgerInfo struct {
 	Height uint64
+}
+
+func (li *mockLedgerInfo) CommitWithPvtData(blockAndPvtData *ledger.BlockAndPvtData) error {
+	panic("implement me")
+}
+
+func (li *mockLedgerInfo) GetPvtDataAndBlockByNum(seqNum uint64) (*ledger.BlockAndPvtData, error) {
+	panic("implement me")
 }
 
 // LedgerHeight returns mocked value to the ledger height
@@ -619,6 +631,7 @@ func newGossipInstance(portPrefix int, id int, maxMsgCount int, boot ...int) Gos
 		gossipSvc:       gossip,
 		chains:          make(map[string]state.GossipStateProvider),
 		leaderElection:  make(map[string]election.LeaderElectionService),
+		coordinators:    make(map[string]privdata.Coordinator),
 		deliveryFactory: &deliveryFactoryImpl{},
 		idMapper:        idMapper,
 		peerIdentity:    api.PeerIdentityType(conf.InternalEndpoint),
@@ -703,8 +716,9 @@ func TestInvalidInitialization(t *testing.T) {
 	defer grpcServer.Stop()
 
 	secAdv := peergossip.NewSecurityAdvisor(mgmt.NewDeserializersManager())
-	InitGossipService(api.PeerIdentityType("IDENTITY"), "localhost:7611", grpcServer,
+	err := InitGossipService(api.PeerIdentityType("IDENTITY"), "localhost:7611", grpcServer,
 		&naiveCryptoService{}, secAdv, nil)
+	assert.NoError(t, err)
 	gService := GetGossipService().(*gossipServiceImpl)
 	defer gService.Stop()
 
@@ -727,8 +741,9 @@ func TestChannelConfig(t *testing.T) {
 	defer grpcServer.Stop()
 
 	secAdv := peergossip.NewSecurityAdvisor(mgmt.NewDeserializersManager())
-	InitGossipService(api.PeerIdentityType("IDENTITY"), "localhost:6611", grpcServer,
+	error = InitGossipService(api.PeerIdentityType("IDENTITY"), "localhost:6611", grpcServer,
 		&naiveCryptoService{}, secAdv, nil)
+	assert.NoError(t, error)
 	gService := GetGossipService().(*gossipServiceImpl)
 	defer gService.Stop()
 

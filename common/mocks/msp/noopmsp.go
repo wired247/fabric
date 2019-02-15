@@ -17,6 +17,8 @@ limitations under the License.
 package msp
 
 import (
+	"time"
+
 	m "github.com/hyperledger/fabric/msp"
 	"github.com/hyperledger/fabric/protos/msp"
 )
@@ -24,7 +26,7 @@ import (
 type noopmsp struct {
 }
 
-// NewNoopMsp returns a no-op implementation of the MSP inteface
+// NewNoopMsp returns a no-op implementation of the MSP interface
 func NewNoopMsp() m.MSP {
 	return &noopmsp{}
 }
@@ -61,6 +63,16 @@ func (msp *noopmsp) GetIntermediateCerts() []m.Identity {
 	return nil
 }
 
+// GetTLSRootCerts returns the root certificates for this MSP
+func (msp *noopmsp) GetTLSRootCerts() [][]byte {
+	return nil
+}
+
+// GetTLSIntermediateCerts returns the intermediate root certificates for this MSP
+func (msp *noopmsp) GetTLSIntermediateCerts() [][]byte {
+	return nil
+}
+
 func (msp *noopmsp) DeserializeIdentity(serializedID []byte) (m.Identity, error) {
 	id, _ := newNoopIdentity()
 	return id, nil
@@ -83,6 +95,10 @@ func newNoopIdentity() (m.Identity, error) {
 
 func (id *noopidentity) SatisfiesPrincipal(*msp.MSPPrincipal) error {
 	return nil
+}
+
+func (id *noopidentity) ExpiresAt() time.Time {
+	return time.Time{}
 }
 
 func (id *noopidentity) GetIdentifier() *m.IdentityIdentifier {

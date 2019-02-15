@@ -26,7 +26,7 @@ import (
 	"fmt"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/hyperledger/fabric/common/config"
+	"github.com/hyperledger/fabric/common/config/channel"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/core/chaincode/shim"
@@ -74,7 +74,7 @@ func (e *PeerConfiger) Init(stub shim.ChaincodeStubInterface) pb.Response {
 // Invoke is called for the following:
 // # to process joining a chain (called by app as a transaction proposal)
 // # to get the current configuration block (called by app)
-// # to update the configuration block (called by commmitter)
+// # to update the configuration block (called by committer)
 // Peer calls this function with 2 arguments:
 // # args[0] is the function name, which must be JoinChain, GetConfigBlock or
 // UpdateConfigBlock

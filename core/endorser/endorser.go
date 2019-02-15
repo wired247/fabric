@@ -21,6 +21,8 @@ import (
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 	"github.com/hyperledger/fabric/core/common/ccprovider"
 	"github.com/hyperledger/fabric/core/common/validation"
+	"github.com/hyperledger/fabric/core/handlers/decoration"
+	"github.com/hyperledger/fabric/core/handlers/library"
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/core/peer"
 	"github.com/hyperledger/fabric/core/policy"
@@ -50,20 +52,24 @@ var endorserLogger = flogging.MustGetLogger("endorser")
 // The Jira issue that documents Endorser flow along with its relationship to
 // the lifecycle chaincode - https://jira.hyperledger.org/browse/FAB-181
 
+type privateDataDistributor func(channel string, txID string, privateData []byte) error
+
 // Endorser provides the Endorser service ProcessProposal
 type Endorser struct {
-	policyChecker policy.PolicyChecker
+	policyChecker         policy.PolicyChecker
+	distributePrivateData privateDataDistributor
 }
 
 // NewEndorserServer creates and returns a new Endorser server instance.
-func NewEndorserServer() pb.EndorserServer {
-	e := new(Endorser)
-	e.policyChecker = policy.NewPolicyChecker(
-		peer.NewChannelPolicyManagerGetter(),
-		mgmt.GetLocalMSP(),
-		mgmt.NewLocalMSPPrincipalGetter(),
-	)
-
+func NewEndorserServer(privDist privateDataDistributor) pb.EndorserServer {
+	e := &Endorser{
+		distributePrivateData: privDist,
+		policyChecker: policy.NewPolicyChecker(
+			peer.NewChannelPolicyManagerGetter(),
+			mgmt.GetLocalMSP(),
+			mgmt.NewLocalMSPPrincipalGetter(),
+		),
+	}
 	return e
 }
 
@@ -78,12 +84,12 @@ func (*Endorser) checkEsccAndVscc(prop *pb.Proposal) error {
 	return nil
 }
 
-func (*Endorser) getTxSimulator(ledgername string) (ledger.TxSimulator, error) {
+func (*Endorser) getTxSimulator(ledgername string, txid string) (ledger.TxSimulator, error) {
 	lgr := peer.GetLedger(ledgername)
 	if lgr == nil {
 		return nil, fmt.Errorf("channel does not exist: %s", ledgername)
 	}
-	return lgr.NewTxSimulator()
+	return lgr.NewTxSimulator(txid)
 }
 
 func (*Endorser) getHistoryQueryExecutor(ledgername string) (ledger.HistoryQueryExecutor, error) {
@@ -110,6 +116,12 @@ func (e *Endorser) callChaincode(ctxt context.Context, chainID string, version s
 	scc := syscc.IsSysCC(cid.Name)
 
 	cccid := ccprovider.NewCCContext(chainID, cid.Name, version, txid, scc, signedProp, prop)
+
+	// decorate the chaincode input
+	decorator := library.InitRegistry(library.Config{}).Lookup(library.DecoratorKey).(decoration.Decorator)
+	cis.ChaincodeSpec.Input.Decorations = make(map[string][]byte)
+	cis.ChaincodeSpec.Input = decorator.Decorate(prop, cis.ChaincodeSpec.Input)
+	cccid.ProposalDecorations = cis.ChaincodeSpec.Input.Decorations
 
 	res, ccevent, err = chaincode.ExecuteChaincode(ctxt, cccid, cis.ChaincodeSpec.Input.Args)
 
@@ -185,11 +197,17 @@ func (e *Endorser) disableJavaCCInst(cid *pb.ChaincodeID, cis *pb.ChaincodeInvoc
 		return nil
 	}
 
+	if argNo >= len(cis.ChaincodeSpec.Input.Args) {
+		return errors.New("Too few arguments passed")
+	}
+
 	//the inner dep spec will contain the type
-	cds, err := putils.GetChaincodeDeploymentSpec(cis.ChaincodeSpec.Input.Args[argNo])
+	ccpack, err := ccprovider.GetCCPackage(cis.ChaincodeSpec.Input.Args[argNo])
 	if err != nil {
 		return err
 	}
+
+	cds := ccpack.GetDepSpec()
 
 	//finally, if JAVA error out
 	if cds.ChaincodeSpec.Type == pb.ChaincodeSpec_JAVA {
@@ -241,7 +259,9 @@ func (e *Endorser) simulateProposal(ctx context.Context, chainID string, txid st
 	}
 
 	//---3. execute the proposal and get simulation results
-	var simResult []byte
+	var simResult *ledger.TxSimulationResults
+	var pubSimResBytes []byte
+	var prvtSimResBytes []byte
 	var res *pb.Response
 	var ccevent *pb.ChaincodeEvent
 	res, ccevent, err = e.callChaincode(ctx, chainID, version, txid, signedProp, prop, cis, cid, txsim)
@@ -254,9 +274,22 @@ func (e *Endorser) simulateProposal(ctx context.Context, chainID string, txid st
 		if simResult, err = txsim.GetTxSimulationResults(); err != nil {
 			return nil, nil, nil, nil, err
 		}
-	}
 
-	return cdLedger, res, simResult, ccevent, nil
+		if prvtSimResBytes, err = simResult.GetPvtSimulationBytes(); err != nil {
+			return nil, nil, nil, nil, err
+		}
+
+		if len(prvtSimResBytes) > 0 {
+			if err := e.distributePrivateData(chainID, txid, prvtSimResBytes); err != nil {
+				return nil, nil, nil, nil, err
+			}
+		}
+
+		if pubSimResBytes, err = simResult.GetPubSimulationBytes(); err != nil {
+			return nil, nil, nil, nil, err
+		}
+	}
+	return cdLedger, res, pubSimResBytes, ccevent, nil
 }
 
 func (e *Endorser) getCDSFromLSCC(ctx context.Context, chainID string, txid string, signedProp *pb.SignedProposal, prop *pb.Proposal, chaincodeID string, txsim ledger.TxSimulator) (*ccprovider.ChaincodeData, error) {
@@ -430,7 +463,7 @@ func (e *Endorser) ProcessProposal(ctx context.Context, signedProp *pb.SignedPro
 	var txsim ledger.TxSimulator
 	var historyQueryExecutor ledger.HistoryQueryExecutor
 	if chainID != "" {
-		if txsim, err = e.getTxSimulator(chainID); err != nil {
+		if txsim, err = e.getTxSimulator(chainID, txid); err != nil {
 			return &pb.ProposalResponse{Response: &pb.Response{Status: 500, Message: err.Error()}}, err
 		}
 		if historyQueryExecutor, err = e.getHistoryQueryExecutor(chainID); err != nil {
@@ -523,7 +556,9 @@ func (e *Endorser) commitTxSimulation(proposal *pb.Proposal, chainID string, sig
 	block := common.NewBlock(blockNumber, []byte{})
 	block.Data.Data = [][]byte{txBytes}
 	block.Header.DataHash = block.Data.Hash()
-	if err = lgr.Commit(block); err != nil {
+	if err = lgr.CommitWithPvtData(&ledger.BlockAndPvtData{
+		Block: block,
+	}); err != nil {
 		return err
 	}
 

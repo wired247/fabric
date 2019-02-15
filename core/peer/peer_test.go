@@ -48,7 +48,7 @@ type mockDeliveryClient struct {
 
 // StartDeliverForChannel dynamically starts delivery of new blocks from ordering service
 // to channel peers.
-func (ds *mockDeliveryClient) StartDeliverForChannel(chainID string, ledgerInfo blocksprovider.LedgerInfo) error {
+func (ds *mockDeliveryClient) StartDeliverForChannel(chainID string, ledgerInfo blocksprovider.LedgerInfo, f func()) error {
 	return nil
 }
 
@@ -157,10 +157,12 @@ func TestCreateChainFromBlock(t *testing.T) {
 		dialOpts = append(dialOpts, grpc.WithInsecure())
 		return dialOpts
 	}
-	service.InitGossipServiceCustomDeliveryFactory(
+	err = service.InitGossipServiceCustomDeliveryFactory(
 		identity, "localhost:13611", grpcServer,
 		&mockDeliveryClientFactory{},
 		messageCryptoService, secAdv, defaultSecureDialOpts)
+
+	assert.NoError(t, err)
 
 	err = CreateChainFromBlock(block)
 	if err != nil {

@@ -83,6 +83,7 @@ type ChaincodeStubInterface interface {
 	// ledger. Note that GetState doesn't read data from the writeset, which
 	// has not been committed to the ledger. In other words, GetState doesn't
 	// consider data modified by PutState that has not been committed.
+	// If the key does not exist in the state database, (nil, nil) is returned.
 	GetState(key string) ([]byte, error)
 
 	// PutState puts the specified `key` and `value` into the transaction's
@@ -177,6 +178,10 @@ type ChaincodeStubInterface interface {
 
 	// GetBinding returns the transaction binding
 	GetBinding() ([]byte, error)
+
+	// GetDecorations returns additional data (if applicable)
+	// about the proposal that originated from the peer
+	GetDecorations() map[string][]byte
 
 	// GetSignedProposal returns the SignedProposal object, which contains all
 	// data elements part of a transaction proposal.
