@@ -11,11 +11,13 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
-	"github.com/hyperledger/fabric/core/config"
+	"github.com/hyperledger/fabric/common/metrics/disabled"
+	"github.com/hyperledger/fabric/core/config/configtest"
 	"github.com/hyperledger/fabric/gossip/api"
 	"github.com/hyperledger/fabric/gossip/common"
-	"github.com/hyperledger/fabric/gossip/identity"
+	"github.com/hyperledger/fabric/gossip/metrics"
 	"github.com/hyperledger/fabric/gossip/util"
 	"github.com/hyperledger/fabric/msp/mgmt"
 	"github.com/hyperledger/fabric/msp/mgmt/testtools"
@@ -52,16 +54,15 @@ func TestNewGossipCryptoService(t *testing.T) {
 	endpoint3 := "localhost:5613"
 	msptesttools.LoadMSPSetupForTesting()
 	peerIdentity, _ := mgmt.GetLocalSigningIdentityOrPanic().Serialize()
-	idMapper := identity.NewIdentityMapper(cryptSvc, peerIdentity)
-
-	g1, err := NewGossipComponent(peerIdentity, endpoint1, s1, secAdv, cryptSvc, idMapper,
-		defaultSecureDialOpts)
+	gossipMetrics := metrics.NewGossipMetrics(&disabled.Provider{})
+	g1, err := NewGossipComponent(peerIdentity, endpoint1, s1, secAdv, cryptSvc,
+		defaultSecureDialOpts, nil, gossipMetrics)
 	assert.NoError(t, err)
-	g2, err := NewGossipComponent(peerIdentity, endpoint2, s2, secAdv, cryptSvc, idMapper,
-		defaultSecureDialOpts, endpoint1)
+	g2, err := NewGossipComponent(peerIdentity, endpoint2, s2, secAdv, cryptSvc,
+		defaultSecureDialOpts, nil, gossipMetrics, endpoint1)
 	assert.NoError(t, err)
-	g3, err := NewGossipComponent(peerIdentity, endpoint3, s3, secAdv, cryptSvc, idMapper,
-		defaultSecureDialOpts, endpoint1)
+	g3, err := NewGossipComponent(peerIdentity, endpoint3, s3, secAdv, cryptSvc,
+		defaultSecureDialOpts, nil, gossipMetrics, endpoint1)
 	assert.NoError(t, err)
 	defer g1.Stop()
 	defer g2.Stop()
@@ -71,23 +72,10 @@ func TestNewGossipCryptoService(t *testing.T) {
 	go s3.Serve(ll3)
 }
 
-func TestBadInitialization(t *testing.T) {
-	msptesttools.LoadMSPSetupForTesting()
-	peerIdentity, _ := mgmt.GetLocalSigningIdentityOrPanic().Serialize()
-	s1 := grpc.NewServer()
-	idMapper := identity.NewIdentityMapper(cryptSvc, peerIdentity)
-	_, err := newConfig("anEndpointWithoutAPort", "anEndpointWithoutAPort")
-
-	viper.Set("peer.tls.enabled", true)
-	_, err = NewGossipComponent(peerIdentity, "localhost:5000", s1, secAdv, cryptSvc, idMapper,
-		defaultSecureDialOpts)
-	assert.Error(t, err)
-}
-
 func setupTestEnv() {
 	viper.SetConfigName("core")
 	viper.SetEnvPrefix("CORE")
-	config.AddDevConfigPath(nil)
+	configtest.AddDevConfigPath(nil)
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()
 	err := viper.ReadInConfig()
@@ -100,10 +88,14 @@ type secAdviser struct {
 }
 
 func (sa *secAdviser) OrgByPeerIdentity(api.PeerIdentityType) api.OrgIdentityType {
-	return api.OrgIdentityType("DEFAULT")
+	return api.OrgIdentityType("SampleOrg")
 }
 
 type cryptoService struct {
+}
+
+func (s *cryptoService) Expiration(peerIdentity api.PeerIdentityType) (time.Time, error) {
+	return time.Now().Add(time.Hour), nil
 }
 
 func (s *cryptoService) GetPKIidOfCert(peerIdentity api.PeerIdentityType) common.PKIidType {

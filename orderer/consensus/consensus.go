@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 package consensus
 
 import (
-	"github.com/hyperledger/fabric/common/config/channel"
+	"github.com/hyperledger/fabric/common/channelconfig"
 	"github.com/hyperledger/fabric/common/crypto"
 	"github.com/hyperledger/fabric/orderer/common/blockcutter"
 	"github.com/hyperledger/fabric/orderer/common/msgprocessor"
@@ -32,13 +32,6 @@ type Consenter interface {
 // 1. Messages are ordered into a stream, the stream is cut into blocks, the blocks are committed (solo, kafka)
 // 2. Messages are cut into blocks, the blocks are ordered, then the blocks are committed (sbft)
 type Chain interface {
-	// NOTE: The kafka consenter has not been updated to perform the revalidation
-	// checks conditionally.  For now, Order/Configure are essentially Enqueue as before.
-	// This does not cause data inconsistency, but it wastes cycles and will be required
-	// to properly support the ConfigUpdate concept once introduced
-	// Once this is done, the MsgClassification logic in msgprocessor should return error
-	// for non ConfigUpdate/Normal msg types
-
 	// Order accepts a message which has been processed at a given configSeq.
 	// If the configSeq advances, it is the responsibility of the consenter
 	// to revalidate and potentially discard the message
@@ -47,14 +40,18 @@ type Chain interface {
 
 	// Configure accepts a message which reconfigures the channel and will
 	// trigger an update to the configSeq if committed.  The configuration must have
-	// been triggered by a ConfigUpdate message, which is included.  If the config
-	// sequence advances, it is the responsibility of the consenter to recompute the
-	// resulting config, discarding the message if the reconfiguration is no longer
-	// valid. While a configure message is in flight, the consenter should lock
-	// and block additional calls to Order/Configure, any messages received will
-	// need to be revalidated before ordering.
+	// been triggered by a ConfigUpdate message. If the config sequence advances,
+	// it is the responsibility of the consenter to recompute the resulting config,
+	// discarding the message if the reconfiguration is no longer valid.
 	// The consenter may return an error, indicating the message was not accepted
-	Configure(configUpdate *cb.Envelope, config *cb.Envelope, configSeq uint64) error
+	Configure(config *cb.Envelope, configSeq uint64) error
+
+	// WaitReady blocks waiting for consenter to be ready for accepting new messages.
+	// This is useful when consenter needs to temporarily block ingress messages so
+	// that in-flight messages can be consumed. It could return error if consenter is
+	// in erroneous states. If this blocking behavior is not desired, consenter could
+	// simply return nil.
+	WaitReady() error
 
 	// Errored returns a channel which will close when an error has occurred.
 	// This is especially useful for the Deliver client, who must terminate waiting
@@ -70,20 +67,30 @@ type Chain interface {
 	Halt()
 }
 
+//go:generate counterfeiter -o mocks/mock_consenter_support.go . ConsenterSupport
+
 // ConsenterSupport provides the resources available to a Consenter implementation.
 type ConsenterSupport interface {
 	crypto.LocalSigner
 	msgprocessor.Processor
 
+	// VerifyBlockSignature verifies a signature of a block with a given optional
+	// configuration (can be nil).
+	VerifyBlockSignature([]*cb.SignedData, *cb.ConfigEnvelope) error
+
 	// BlockCutter returns the block cutting helper for this channel.
 	BlockCutter() blockcutter.Receiver
 
 	// SharedConfig provides the shared config from the channel's current config block.
-	SharedConfig() config.Orderer
+	SharedConfig() channelconfig.Orderer
 
 	// CreateNextBlock takes a list of messages and creates the next block based on the block with highest block number committed to the ledger
 	// Note that either WriteBlock or WriteConfigBlock must be called before invoking this method a second time.
 	CreateNextBlock(messages []*cb.Envelope) *cb.Block
+
+	// Block returns a block with the given number,
+	// or nil if such a block doesn't exist.
+	Block(number uint64) *cb.Block
 
 	// WriteBlock commits a block to the ledger.
 	WriteBlock(block *cb.Block, encodedMetadataValue []byte)

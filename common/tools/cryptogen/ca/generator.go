@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2017 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 package ca
 
@@ -22,14 +12,17 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io/ioutil"
 	"math/big"
 	"net"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
-	"path/filepath"
-
+	"github.com/hyperledger/fabric/bccsp/utils"
 	"github.com/hyperledger/fabric/common/tools/cryptogen/csp"
+	"github.com/pkg/errors"
 )
 
 type CA struct {
@@ -67,7 +60,10 @@ func NewCA(baseDir, org, name, country, province, locality, orgUnit, streetAddre
 				template.KeyUsage |= x509.KeyUsageDigitalSignature |
 					x509.KeyUsageKeyEncipherment | x509.KeyUsageCertSign |
 					x509.KeyUsageCRLSign
-				template.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageAny}
+				template.ExtKeyUsage = []x509.ExtKeyUsage{
+					x509.ExtKeyUsageClientAuth,
+					x509.ExtKeyUsageServerAuth,
+				}
 
 				//set the organization for the subject
 				subject := subjectTemplateAdditional(country, province, locality, orgUnit, streetAddress, postalCode)
@@ -101,7 +97,7 @@ func NewCA(baseDir, org, name, country, province, locality, orgUnit, streetAddre
 
 // SignCertificate creates a signed certificate based on a built-in template
 // and saves it in baseDir/name
-func (ca *CA) SignCertificate(baseDir, name string, sans []string, pub *ecdsa.PublicKey,
+func (ca *CA) SignCertificate(baseDir, name string, ous, sans []string, pub *ecdsa.PublicKey,
 	ku x509.KeyUsage, eku []x509.ExtKeyUsage) (*x509.Certificate, error) {
 
 	template := x509Template()
@@ -111,6 +107,8 @@ func (ca *CA) SignCertificate(baseDir, name string, sans []string, pub *ecdsa.Pu
 	//set the organization for the subject
 	subject := subjectTemplateAdditional(ca.Country, ca.Province, ca.Locality, ca.OrganizationalUnit, ca.StreetAddress, ca.PostalCode)
 	subject.CommonName = name
+
+	subject.OrganizationalUnit = append(subject.OrganizationalUnit, ous...)
 
 	template.Subject = subject
 	for _, san := range sans {
@@ -170,23 +168,27 @@ func subjectTemplateAdditional(country, province, locality, orgUnit, streetAddre
 // default template for X509 certificates
 func x509Template() x509.Certificate {
 
-	//generate a serial number
+	// generate a serial number
 	serialNumberLimit := new(big.Int).Lsh(big.NewInt(1), 128)
 	serialNumber, _ := rand.Int(rand.Reader, serialNumberLimit)
 
-	now := time.Now()
+	// set expiry to around 10 years
+	expiry := 3650 * 24 * time.Hour
+	// round minute and backdate 5 minutes
+	notBefore := time.Now().Round(time.Minute).Add(-5 * time.Minute).UTC()
+
 	//basic template to use
 	x509 := x509.Certificate{
 		SerialNumber:          serialNumber,
-		NotBefore:             now,
-		NotAfter:              now.Add(3650 * 24 * time.Hour), //~ten years
+		NotBefore:             notBefore,
+		NotAfter:              notBefore.Add(expiry).UTC(),
 		BasicConstraintsValid: true,
 	}
 	return x509
 
 }
 
-// generate a signed X509 certficate using ECDSA
+// generate a signed X509 certificate using ECDSA
 func genCertificateECDSA(baseDir, name string, template, parent *x509.Certificate, pub *ecdsa.PublicKey,
 	priv interface{}) (*x509.Certificate, error) {
 
@@ -214,4 +216,35 @@ func genCertificateECDSA(baseDir, name string, template, parent *x509.Certificat
 		return nil, err
 	}
 	return x509Cert, nil
+}
+
+// LoadCertificateECDSA load a ecdsa cert from a file in cert path
+func LoadCertificateECDSA(certPath string) (*x509.Certificate, error) {
+	var cert *x509.Certificate
+	var err error
+
+	walkFunc := func(path string, info os.FileInfo, err error) error {
+		if strings.HasSuffix(path, ".pem") {
+			rawCert, err := ioutil.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			block, _ := pem.Decode(rawCert)
+			if block == nil || block.Type != "CERTIFICATE" {
+				return errors.Errorf("%s: wrong PEM encoding", path)
+			}
+			cert, err = utils.DERToX509Certificate(block.Bytes)
+			if err != nil {
+				return errors.Errorf("%s: wrong DER encoding", path)
+			}
+		}
+		return nil
+	}
+
+	err = filepath.Walk(certPath, walkFunc)
+	if err != nil {
+		return nil, err
+	}
+
+	return cert, err
 }

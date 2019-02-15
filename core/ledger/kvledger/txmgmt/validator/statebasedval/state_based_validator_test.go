@@ -22,20 +22,158 @@ import (
 	"testing"
 
 	"github.com/hyperledger/fabric/common/flogging"
-	"github.com/hyperledger/fabric/common/ledger/testutil"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/privacyenabledstate"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/rwsetutil"
-	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/validator/valinternal"
+	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/statedb"
+	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/validator/internal"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/version"
+	"github.com/hyperledger/fabric/core/ledger/util"
 	"github.com/hyperledger/fabric/protos/ledger/rwset/kvrwset"
 	"github.com/hyperledger/fabric/protos/peer"
 	"github.com/spf13/viper"
+	"github.com/stretchr/testify/assert"
 )
 
+type keyValue struct {
+	namespace  string
+	collection string
+	key        string
+	keyHash    []byte
+	value      []byte
+	version    *version.Height
+}
+
 func TestMain(m *testing.M) {
-	flogging.SetModuleLevel("statevalidator", "debug")
+	flogging.ActivateSpec("statevalidator,statebasedval,statecouchdb=debug")
 	viper.Set("peer.fileSystemPath", "/tmp/fabric/ledgertests/kvledger/txmgmt/validator/statebasedval")
 	os.Exit(m.Run())
+}
+
+func TestValidatorBulkLoadingOfCache(t *testing.T) {
+	testDBEnv := privacyenabledstate.CouchDBCommonStorageTestEnv{}
+	testDBEnv.Init(t)
+	defer testDBEnv.Cleanup()
+	db := testDBEnv.GetDBHandle("testdb")
+
+	validator := NewValidator(db)
+
+	//populate db with initial data
+	batch := privacyenabledstate.NewUpdateBatch()
+
+	// Create two public KV pairs
+	pubKV1 := keyValue{namespace: "ns1", key: "key1", value: []byte("value1"), version: version.NewHeight(1, 0)}
+	pubKV2 := keyValue{namespace: "ns1", key: "key2", value: []byte("value2"), version: version.NewHeight(1, 1)}
+
+	// Create two hashed KV pairs
+	hashedKV1 := keyValue{namespace: "ns2", collection: "col1", key: "hashedPvtKey1",
+		keyHash: util.ComputeStringHash("hashedPvtKey1"), value: []byte("value1"),
+		version: version.NewHeight(1, 2)}
+	hashedKV2 := keyValue{namespace: "ns2", collection: "col2", key: "hashedPvtKey2",
+		keyHash: util.ComputeStringHash("hashedPvtKey2"), value: []byte("value2"),
+		version: version.NewHeight(1, 3)}
+
+	// Store the public and hashed KV pairs to DB
+	batch.PubUpdates.Put(pubKV1.namespace, pubKV1.key, pubKV1.value, pubKV1.version)
+	batch.PubUpdates.Put(pubKV2.namespace, pubKV2.key, pubKV2.value, pubKV2.version)
+	batch.HashUpdates.Put(hashedKV1.namespace, hashedKV1.collection, hashedKV1.keyHash, hashedKV1.value, hashedKV1.version)
+	batch.HashUpdates.Put(hashedKV2.namespace, hashedKV2.collection, hashedKV2.keyHash, hashedKV2.value, hashedKV2.version)
+
+	db.ApplyPrivacyAwareUpdates(batch, version.NewHeight(1, 4))
+
+	// Construct read set for transaction 1. It contains two public KV pairs (pubKV1, pubKV2) and two
+	// hashed KV pairs (hashedKV1, hashedKV2).
+	rwsetBuilder1 := rwsetutil.NewRWSetBuilder()
+	rwsetBuilder1.AddToReadSet(pubKV1.namespace, pubKV1.key, pubKV1.version)
+	rwsetBuilder1.AddToReadSet(pubKV2.namespace, pubKV2.key, pubKV2.version)
+	rwsetBuilder1.AddToHashedReadSet(hashedKV1.namespace, hashedKV1.collection, hashedKV1.key, hashedKV1.version)
+	rwsetBuilder1.AddToHashedReadSet(hashedKV2.namespace, hashedKV2.collection, hashedKV2.key, hashedKV2.version)
+
+	// Construct read set for transaction 1. It contains KV pairs which are not in the state db.
+	rwsetBuilder2 := rwsetutil.NewRWSetBuilder()
+	rwsetBuilder2.AddToReadSet("ns3", "key1", nil)
+	rwsetBuilder2.AddToHashedReadSet("ns3", "col1", "hashedPvtKey1", nil)
+
+	// Construct internal block
+	transRWSets := getTestPubSimulationRWSet(t, rwsetBuilder1, rwsetBuilder2)
+	var trans []*internal.Transaction
+	for i, tranRWSet := range transRWSets {
+		tx := &internal.Transaction{
+			ID:             fmt.Sprintf("txid-%d", i),
+			IndexInBlock:   i,
+			ValidationCode: peer.TxValidationCode_VALID,
+			RWSet:          tranRWSet,
+		}
+		trans = append(trans, tx)
+	}
+	block := &internal.Block{Num: 1, Txs: trans}
+
+	if validator.db.IsBulkOptimizable() {
+
+		commonStorageDB := validator.db.(*privacyenabledstate.CommonStorageDB)
+		bulkOptimizable, _ := commonStorageDB.VersionedDB.(statedb.BulkOptimizable)
+
+		// Clear cache loaded during ApplyPrivacyAwareUpdates()
+		validator.db.ClearCachedVersions()
+
+		validator.preLoadCommittedVersionOfRSet(block)
+
+		// pubKV1 should be found in cache
+		version, keyFound := bulkOptimizable.GetCachedVersion(pubKV1.namespace, pubKV1.key)
+		assert.True(t, keyFound)
+		assert.Equal(t, pubKV1.version, version)
+
+		// pubKV2 should be found in cache
+		version, keyFound = bulkOptimizable.GetCachedVersion(pubKV2.namespace, pubKV2.key)
+		assert.True(t, keyFound)
+		assert.Equal(t, pubKV2.version, version)
+
+		// [ns3, key1] should be found in cache as it was in the readset of transaction 1 though it is
+		// not in the state db but the version would be nil
+		version, keyFound = bulkOptimizable.GetCachedVersion("ns3", "key1")
+		assert.True(t, keyFound)
+		assert.Nil(t, version)
+
+		// [ns4, key1] should not be found in cache as it was not loaded
+		version, keyFound = bulkOptimizable.GetCachedVersion("ns4", "key1")
+		assert.False(t, keyFound)
+		assert.Nil(t, version)
+
+		// hashedKV1 should be found in cache
+		version, keyFound = validator.db.GetCachedKeyHashVersion(hashedKV1.namespace,
+			hashedKV1.collection, hashedKV1.keyHash)
+		assert.True(t, keyFound)
+		assert.Equal(t, hashedKV1.version, version)
+
+		// hashedKV2 should be found in cache
+		version, keyFound = validator.db.GetCachedKeyHashVersion(hashedKV2.namespace,
+			hashedKV2.collection, hashedKV2.keyHash)
+		assert.True(t, keyFound)
+		assert.Equal(t, hashedKV2.version, version)
+
+		// [ns3, col1, hashedPvtKey1] should be found in cache as it was in the readset of transaction 2 though it is
+		// not in the state db
+		version, keyFound = validator.db.GetCachedKeyHashVersion("ns3", "col1", util.ComputeStringHash("hashedPvtKey1"))
+		assert.True(t, keyFound)
+		assert.Nil(t, version)
+
+		// [ns4, col, key1] should not be found in cache as it was not loaded
+		version, keyFound = validator.db.GetCachedKeyHashVersion("ns4", "col1", util.ComputeStringHash("key1"))
+		assert.False(t, keyFound)
+		assert.Nil(t, version)
+
+		// Clear cache
+		validator.db.ClearCachedVersions()
+
+		// pubKV1 should not be found in cache as cahce got emptied
+		version, keyFound = bulkOptimizable.GetCachedVersion(pubKV1.namespace, pubKV1.key)
+		assert.False(t, keyFound)
+		assert.Nil(t, version)
+
+		// [ns3, col1, key1] should not be found in cache as cahce got emptied
+		version, keyFound = validator.db.GetCachedKeyHashVersion("ns3", "col1", util.ComputeStringHash("hashedPvtKey1"))
+		assert.False(t, keyFound)
+		assert.Nil(t, version)
+	}
 }
 
 func TestValidator(t *testing.T) {
@@ -207,9 +345,9 @@ func TestPhantomHashBasedValidation(t *testing.T) {
 }
 
 func checkValidation(t *testing.T, val *Validator, transRWSets []*rwsetutil.TxRwSet, expectedInvalidTxIndexes []int) {
-	var trans []*valinternal.Transaction
+	var trans []*internal.Transaction
 	for i, tranRWSet := range transRWSets {
-		tx := &valinternal.Transaction{
+		tx := &internal.Transaction{
 			ID:             fmt.Sprintf("txid-%d", i),
 			IndexInBlock:   i,
 			ValidationCode: peer.TxValidationCode_VALID,
@@ -217,9 +355,9 @@ func checkValidation(t *testing.T, val *Validator, transRWSets []*rwsetutil.TxRw
 		}
 		trans = append(trans, tx)
 	}
-	block := &valinternal.Block{Num: 1, Txs: trans}
+	block := &internal.Block{Num: 1, Txs: trans}
 	_, err := val.ValidateAndPrepareBatch(block, true)
-	testutil.AssertNoError(t, err, "")
+	assert.NoError(t, err)
 	t.Logf("block.Txs[0].ValidationCode = %d", block.Txs[0].ValidationCode)
 	var invalidTxs []int
 	for _, tx := range block.Txs {
@@ -227,8 +365,8 @@ func checkValidation(t *testing.T, val *Validator, transRWSets []*rwsetutil.TxRw
 			invalidTxs = append(invalidTxs, tx.IndexInBlock)
 		}
 	}
-	testutil.AssertEquals(t, len(invalidTxs), len(expectedInvalidTxIndexes))
-	testutil.AssertContainsAll(t, invalidTxs, expectedInvalidTxIndexes)
+	assert.Equal(t, len(expectedInvalidTxIndexes), len(invalidTxs))
+	assert.ElementsMatch(t, invalidTxs, expectedInvalidTxIndexes)
 }
 
 func buildTestHashResults(t *testing.T, maxDegree int, kvReads []*kvrwset.KVRead) *kvrwset.QueryReadsMerkleSummary {
@@ -240,8 +378,8 @@ func buildTestHashResults(t *testing.T, maxDegree int, kvReads []*kvrwset.KVRead
 		helper.AddResult(kvRead)
 	}
 	_, h, err := helper.Done()
-	testutil.AssertNoError(t, err, "")
-	testutil.AssertNotNil(t, h)
+	assert.NoError(t, err)
+	assert.NotNil(t, h)
 	return h
 }
 
@@ -249,11 +387,11 @@ func getTestPubSimulationRWSet(t *testing.T, builders ...*rwsetutil.RWSetBuilder
 	var pubRWSets []*rwsetutil.TxRwSet
 	for _, b := range builders {
 		s, e := b.GetTxSimulationResults()
-		testutil.AssertNoError(t, e, "")
+		assert.NoError(t, e)
 		sBytes, err := s.GetPubSimulationBytes()
-		testutil.AssertNoError(t, err, "")
+		assert.NoError(t, err)
 		pubRWSet := &rwsetutil.TxRwSet{}
-		testutil.AssertNoError(t, pubRWSet.FromProtoBytes(sBytes), "")
+		assert.NoError(t, pubRWSet.FromProtoBytes(sBytes))
 		pubRWSets = append(pubRWSets, pubRWSet)
 	}
 	return pubRWSets

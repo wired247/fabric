@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2017 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package mgmt
@@ -19,7 +9,8 @@ package mgmt
 import (
 	"testing"
 
-	configvaluesmsp "github.com/hyperledger/fabric/common/config/channel/msp"
+	"github.com/hyperledger/fabric/common/util"
+	"github.com/hyperledger/fabric/core/config/configtest"
 	"github.com/hyperledger/fabric/msp"
 	"github.com/stretchr/testify/assert"
 )
@@ -29,26 +20,19 @@ func TestGetManagerForChains(t *testing.T) {
 	mspMgr1 := GetManagerForChain("test")
 	// ensure MSPManager is set
 	if mspMgr1 == nil {
-		t.FailNow()
+		t.Fatal("mspMgr1 fail")
 	}
 
 	// MSPManager for channel now exists
 	mspMgr2 := GetManagerForChain("test")
 	// ensure MSPManager returned matches the first result
 	if mspMgr2 != mspMgr1 {
-		t.FailNow()
+		t.Fatal("mspMgr2 != mspMgr1 fail")
 	}
 }
 
 func TestGetManagerForChains_usingMSPConfigHandlers(t *testing.T) {
-	XXXSetMSPManager("test", &configvaluesmsp.MSPConfigHandler{MSPManager: nil})
-	msp1 := GetManagerForChain("test")
-	// return value should be nil because the MSPManager was not initialized
-	if msp1 != nil {
-		t.Fatal("MSPManager should have been nil")
-	}
-
-	XXXSetMSPManager("foo", &configvaluesmsp.MSPConfigHandler{MSPManager: msp.NewMSPManager()})
+	XXXSetMSPManager("foo", msp.NewMSPManager())
 	msp2 := GetManagerForChain("foo")
 	// return value should be set because the MSPManager was initialized
 	if msp2 == nil {
@@ -57,7 +41,7 @@ func TestGetManagerForChains_usingMSPConfigHandlers(t *testing.T) {
 }
 
 func TestGetIdentityDeserializer(t *testing.T) {
-	XXXSetMSPManager("baz", &configvaluesmsp.MSPConfigHandler{MSPManager: msp.NewMSPManager()})
+	XXXSetMSPManager("baz", msp.NewMSPManager())
 	ids := GetIdentityDeserializer("baz")
 	assert.NotNil(t, ids)
 	ids = GetIdentityDeserializer("")
@@ -67,4 +51,86 @@ func TestGetIdentityDeserializer(t *testing.T) {
 func TestGetLocalSigningIdentityOrPanic(t *testing.T) {
 	sid := GetLocalSigningIdentityOrPanic()
 	assert.NotNil(t, sid)
+}
+
+func TestUpdateLocalMspCache(t *testing.T) {
+	// reset localMsp to force it to be initialized on the first call
+	localMsp = nil
+
+	// first call should initialize local MSP and returned the cached version
+	firstMsp := GetLocalMSP()
+	// second call should return the same
+	secondMsp := GetLocalMSP()
+	// third call should return the same
+	thirdMsp := GetLocalMSP()
+
+	// the same (non-cached if not patched) instance
+	if thirdMsp != secondMsp {
+		t.Fatalf("thirdMsp != secondMsp")
+	}
+	// first (cached) and second (non-cached) different unless patched
+	if firstMsp != secondMsp {
+		t.Fatalf("firstMsp != secondMsp")
+	}
+}
+
+func TestNewMSPMgmtMgr(t *testing.T) {
+	err := LoadMSPSetupForTesting()
+	assert.Nil(t, err)
+
+	// test for nonexistent channel
+	mspMgmtMgr := GetManagerForChain("fake")
+
+	id := GetLocalSigningIdentityOrPanic()
+	assert.NotNil(t, id)
+
+	serializedID, err := id.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize should have succeeded, got err %s", err)
+		return
+	}
+
+	idBack, err := mspMgmtMgr.DeserializeIdentity(serializedID)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "channel doesn't exist")
+	assert.Nil(t, idBack, "deserialized identity should have been nil")
+
+	// test for existing channel
+	mspMgmtMgr = GetManagerForChain(util.GetTestChainID())
+
+	id = GetLocalSigningIdentityOrPanic()
+	assert.NotNil(t, id)
+
+	serializedID, err = id.Serialize()
+	if err != nil {
+		t.Fatalf("Serialize should have succeeded, got err %s", err)
+		return
+	}
+
+	idBack, err = mspMgmtMgr.DeserializeIdentity(serializedID)
+	assert.NoError(t, err)
+	assert.NotNil(t, idBack, "deserialized identity should not have been nil")
+}
+
+func LoadMSPSetupForTesting() error {
+	dir, err := configtest.GetDevMspDir()
+	if err != nil {
+		return err
+	}
+	conf, err := msp.GetLocalMspConfig(dir, nil, "SampleOrg")
+	if err != nil {
+		return err
+	}
+
+	err = GetLocalMSP().Setup(conf)
+	if err != nil {
+		return err
+	}
+
+	err = GetManagerForChain(util.GetTestChainID()).Setup([]msp.MSP{GetLocalMSP()})
+	if err != nil {
+		return err
+	}
+
+	return nil
 }

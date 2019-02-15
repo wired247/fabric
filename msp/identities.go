@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package msp
@@ -22,18 +12,17 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
-	"errors"
-	"fmt"
 	"time"
 
 	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric/bccsp"
 	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/protos/msp"
-	"github.com/op/go-logging"
+	"github.com/pkg/errors"
+	"go.uber.org/zap/zapcore"
 )
 
-var mspIdentityLogger = flogging.MustGetLogger("msp/identity")
+var mspIdentityLogger = flogging.MustGetLogger("msp.identity")
 
 type identity struct {
 	// id contains the identifier (MSPID and identity identifier) for this instance
@@ -50,7 +39,7 @@ type identity struct {
 }
 
 func newIdentity(cert *x509.Certificate, pk bccsp.Key, msp *bccspmsp) (Identity, error) {
-	if mspIdentityLogger.IsEnabledFor(logging.DEBUG) {
+	if mspIdentityLogger.IsEnabledFor(zapcore.DebugLevel) {
 		mspIdentityLogger.Debugf("Creating identity instance for cert %s", certToPEM(cert))
 	}
 
@@ -65,12 +54,12 @@ func newIdentity(cert *x509.Certificate, pk bccsp.Key, msp *bccspmsp) (Identity,
 	// Use the hash of the identity's certificate as id in the IdentityIdentifier
 	hashOpt, err := bccsp.GetHashOpt(msp.cryptoConfig.IdentityIdentifierHashFunction)
 	if err != nil {
-		return nil, fmt.Errorf("Failed getting hash function options [%s]", err)
+		return nil, errors.WithMessage(err, "failed getting hash function options")
 	}
 
 	digest, err := msp.bccsp.Hash(cert.Raw, hashOpt)
 	if err != nil {
-		return nil, fmt.Errorf("Failed hashing raw certificate to compute the id of the IdentityIdentifier [%s]", err)
+		return nil, errors.WithMessage(err, "failed hashing raw certificate to compute the id of the IdentityIdentifier")
 	}
 
 	id := &IdentityIdentifier{
@@ -100,7 +89,7 @@ func (id *identity) GetMSPIdentifier() string {
 	return id.id.Mspid
 }
 
-// IsValid returns nil if this instance is a valid identity or an error otherwise
+// Validate returns nil if this instance is a valid identity or an error otherwise
 func (id *identity) Validate() error {
 	return id.msp.Validate(id)
 }
@@ -113,7 +102,7 @@ func (id *identity) GetOrganizationalUnits() []*OUIdentifier {
 
 	cid, err := id.msp.getCertificationChainIdentifier(id)
 	if err != nil {
-		mspIdentityLogger.Errorf("Failed getting certification chain identifier for [%v]: [%s]", id, err)
+		mspIdentityLogger.Errorf("Failed getting certification chain identifier for [%v]: [%+v]", id, err)
 
 		return nil
 	}
@@ -129,6 +118,11 @@ func (id *identity) GetOrganizationalUnits() []*OUIdentifier {
 	return res
 }
 
+// Anonymous returns true if this identity provides anonymity
+func (id *identity) Anonymous() bool {
+	return false
+}
+
 // NewSerializedIdentity returns a serialized identity
 // having as content the passed mspID and x509 certificate in PEM format.
 // This method does not check the validity of certificate nor
@@ -139,7 +133,7 @@ func NewSerializedIdentity(mspID string, certPEM []byte) ([]byte, error) {
 	sId := &msp.SerializedIdentity{Mspid: mspID, IdBytes: certPEM}
 	raw, err := proto.Marshal(sId)
 	if err != nil {
-		return nil, fmt.Errorf("Failed serializing identity [%s][% X]: [%s]", mspID, certPEM, err)
+		return nil, errors.Wrapf(err, "failed serializing identity [%s][%X]", mspID, certPEM)
 	}
 	return raw, nil
 }
@@ -153,22 +147,22 @@ func (id *identity) Verify(msg []byte, sig []byte) error {
 	// Compute Hash
 	hashOpt, err := id.getHashOpt(id.msp.cryptoConfig.SignatureHashFamily)
 	if err != nil {
-		return fmt.Errorf("Failed getting hash function options [%s]", err)
+		return errors.WithMessage(err, "failed getting hash function options")
 	}
 
 	digest, err := id.msp.bccsp.Hash(msg, hashOpt)
 	if err != nil {
-		return fmt.Errorf("Failed computing digest [%s]", err)
+		return errors.WithMessage(err, "failed computing digest")
 	}
 
-	if mspIdentityLogger.IsEnabledFor(logging.DEBUG) {
+	if mspIdentityLogger.IsEnabledFor(zapcore.DebugLevel) {
 		mspIdentityLogger.Debugf("Verify: digest = %s", hex.Dump(digest))
 		mspIdentityLogger.Debugf("Verify: sig = %s", hex.Dump(sig))
 	}
 
 	valid, err := id.msp.bccsp.Verify(id.pk, sig, digest, nil)
 	if err != nil {
-		return fmt.Errorf("Could not determine the validity of the signature, err %s", err)
+		return errors.WithMessage(err, "could not determine the validity of the signature")
 	} else if !valid {
 		return errors.New("The signature is invalid")
 	}
@@ -180,17 +174,17 @@ func (id *identity) Verify(msg []byte, sig []byte) error {
 func (id *identity) Serialize() ([]byte, error) {
 	// mspIdentityLogger.Infof("Serializing identity %s", id.id)
 
-	pb := &pem.Block{Bytes: id.cert.Raw}
+	pb := &pem.Block{Bytes: id.cert.Raw, Type: "CERTIFICATE"}
 	pemBytes := pem.EncodeToMemory(pb)
 	if pemBytes == nil {
-		return nil, fmt.Errorf("Encoding of identitiy failed")
+		return nil, errors.New("encoding of identity failed")
 	}
 
 	// We serialize identities by prepending the MSPID and appending the ASN.1 DER content of the cert
 	sId := &msp.SerializedIdentity{Mspid: id.id.Mspid, IdBytes: pemBytes}
 	idBytes, err := proto.Marshal(sId)
 	if err != nil {
-		return nil, fmt.Errorf("Could not marshal a SerializedIdentity structure for identity %s, err %s", id.id, err)
+		return nil, errors.Wrapf(err, "could not marshal a SerializedIdentity structure for identity %s", id.id)
 	}
 
 	return idBytes, nil
@@ -203,7 +197,7 @@ func (id *identity) getHashOpt(hashFamily string) (bccsp.HashOpts, error) {
 	case bccsp.SHA3:
 		return bccsp.GetHashOpt(bccsp.SHA3_256)
 	}
-	return nil, fmt.Errorf("hash famility not recognized [%s]", hashFamily)
+	return nil, errors.Errorf("hash familiy not recognized [%s]", hashFamily)
 }
 
 type signingidentity struct {
@@ -230,12 +224,12 @@ func (id *signingidentity) Sign(msg []byte) ([]byte, error) {
 	// Compute Hash
 	hashOpt, err := id.getHashOpt(id.msp.cryptoConfig.SignatureHashFamily)
 	if err != nil {
-		return nil, fmt.Errorf("Failed getting hash function options [%s]", err)
+		return nil, errors.WithMessage(err, "failed getting hash function options")
 	}
 
 	digest, err := id.msp.bccsp.Hash(msg, hashOpt)
 	if err != nil {
-		return nil, fmt.Errorf("Failed computing digest [%s]", err)
+		return nil, errors.WithMessage(err, "failed computing digest")
 	}
 
 	if len(msg) < 32 {
@@ -249,6 +243,8 @@ func (id *signingidentity) Sign(msg []byte) ([]byte, error) {
 	return id.signer.Sign(rand.Reader, digest, nil)
 }
 
+// GetPublicVersion returns the public version of this identity,
+// namely, the one that is only able to verify messages and not sign them
 func (id *signingidentity) GetPublicVersion() Identity {
 	return &id.identity
 }

@@ -15,10 +15,11 @@ import (
 	"time"
 
 	"github.com/hyperledger/fabric/bccsp/factory"
+	"github.com/hyperledger/fabric/common/metrics/disabled"
 	"github.com/hyperledger/fabric/gossip/api"
 	"github.com/hyperledger/fabric/gossip/common"
 	"github.com/hyperledger/fabric/gossip/discovery"
-	"github.com/hyperledger/fabric/gossip/identity"
+	"github.com/hyperledger/fabric/gossip/metrics"
 	"github.com/hyperledger/fabric/gossip/util"
 	proto "github.com/hyperledger/fabric/protos/gossip"
 	"github.com/stretchr/testify/assert"
@@ -35,18 +36,27 @@ func init() {
 }
 
 type configurableCryptoService struct {
+	sync.RWMutex
 	m map[string]api.OrgIdentityType
+}
+
+func (c *configurableCryptoService) Expiration(peerIdentity api.PeerIdentityType) (time.Time, error) {
+	return time.Now().Add(time.Hour), nil
 }
 
 func (c *configurableCryptoService) putInOrg(port int, org string) {
 	identity := fmt.Sprintf("localhost:%d", port)
+	c.Lock()
 	c.m[identity] = api.OrgIdentityType(org)
+	c.Unlock()
 }
 
 // OrgByPeerIdentity returns the OrgIdentityType
 // of a given peer identity
 func (c *configurableCryptoService) OrgByPeerIdentity(identity api.PeerIdentityType) api.OrgIdentityType {
+	c.RLock()
 	org := c.m[string(identity)]
+	c.RUnlock()
 	return org
 }
 
@@ -108,11 +118,11 @@ func newGossipInstanceWithExternalEndpoint(portPrefix int, id int, mcs *configur
 		PublishCertPeriod:          time.Duration(4) * time.Second,
 		PublishStateInfoInterval:   time.Duration(1) * time.Second,
 		RequestStateInfoInterval:   time.Duration(1) * time.Second,
+		TimeForMembershipTracker:   5 * time.Second,
 	}
-	selfId := api.PeerIdentityType(conf.InternalEndpoint)
-	idMapper := identity.NewIdentityMapper(mcs, selfId)
-	g := NewGossipServiceWithServer(conf, mcs, mcs, idMapper, selfId,
-		nil)
+	selfID := api.PeerIdentityType(conf.InternalEndpoint)
+	g := NewGossipServiceWithServer(conf, mcs, mcs, selfID,
+		nil, metrics.NewGossipMetrics(&disabled.Provider{}))
 
 	return g
 }
@@ -121,7 +131,7 @@ func TestMultipleOrgEndpointLeakage(t *testing.T) {
 	t.Parallel()
 	defer testWG.Done()
 	// Scenario: create 2 organizations, each with 5 peers.
-	// The first org will have an anchor peer, but the second won't.
+	// Both organizations will have an anchor peer each
 	// The first 2 peers of each org would have an external endpoint, the rest won't.
 	// Have all peers join a channel with the 2 organizations.
 	// Ensure that after membership is stabilized:
@@ -134,13 +144,11 @@ func TestMultipleOrgEndpointLeakage(t *testing.T) {
 	peersInOrg := 5
 	orgA := "orgA"
 	orgB := "orgB"
+	channel := common.ChainID("TEST")
 	orgs := []string{orgA, orgB}
-	orgs2Peers := map[string][]Gossip{
-		orgs[0]: {},
-		orgs[1]: {},
-	}
+	peers := []Gossip{}
+
 	expectedMembershipSize := map[string]int{}
-	peers2Orgs := map[string]api.OrgIdentityType{}
 	peersWithExternalEndpoints := make(map[string]struct{})
 
 	shouldAKnowB := func(a common.PKIidType, b common.PKIidType) bool {
@@ -158,33 +166,24 @@ func TestMultipleOrgEndpointLeakage(t *testing.T) {
 		return bytes.Equal(orgOfPeerA, orgOfPeerB)
 	}
 
-	amountOfPeersShouldKnow := func(pkiID common.PKIidType) int {
-		return expectedMembershipSize[string(pkiID)]
-	}
-
-	for orgIndex := 0; orgIndex < 2; orgIndex++ {
+	for orgIndex, org := range orgs {
 		for i := 0; i < peersInOrg; i++ {
 			id := orgIndex*peersInOrg + i
 			port := id + portPrefix
-			org := orgs[orgIndex]
 			endpoint := fmt.Sprintf("localhost:%d", port)
-			peers2Orgs[endpoint] = api.OrgIdentityType(org)
 			cs.putInOrg(port, org)
-			membershipSizeExpected := peersInOrg - 1 // All the others in its org
-			var peer Gossip
-			var bootPeers []int
-			if orgIndex == 0 {
-				bootPeers = []int{0}
-			}
+			expectedMembershipSize[endpoint] = peersInOrg - 1 // All the others in its org
 			externalEndpoint := ""
-			if i < 2 { // The first 2 peers of each org would have an external endpoint
+			if i < 2 {
+				// The first 2 peers of each org would have an external endpoint.
+				// orgA: 11610, 11611
+				// orgB: 11615, 11616
 				externalEndpoint = endpoint
 				peersWithExternalEndpoints[externalEndpoint] = struct{}{}
-				membershipSizeExpected += 2 // should know the extra 2 peers from the other org
+				expectedMembershipSize[endpoint] += 2 // should know the extra 2 peers from the other org
 			}
-			expectedMembershipSize[endpoint] = membershipSizeExpected
-			peer = newGossipInstanceWithExternalEndpoint(portPrefix, id, cs, externalEndpoint, bootPeers...)
-			orgs2Peers[org] = append(orgs2Peers[org], peer)
+			peer := newGossipInstanceWithExternalEndpoint(portPrefix, id, cs, externalEndpoint)
+			peers = append(peers, peer)
 		}
 	}
 
@@ -192,7 +191,6 @@ func TestMultipleOrgEndpointLeakage(t *testing.T) {
 		members2AnchorPeers: map[string][]api.AnchorPeer{
 			orgA: {
 				{Host: "localhost", Port: 11611},
-				{Host: "localhost", Port: 11616},
 			},
 			orgB: {
 				{Host: "localhost", Port: 11615},
@@ -200,42 +198,36 @@ func TestMultipleOrgEndpointLeakage(t *testing.T) {
 		},
 	}
 
-	channel := common.ChainID("TEST")
-
-	for _, peers := range orgs2Peers {
-		for _, p := range peers {
-			p.JoinChan(jcm, channel)
-			p.UpdateChannelMetadata([]byte("bla"), channel)
-		}
+	for _, p := range peers {
+		p.JoinChan(jcm, channel)
+		p.UpdateLedgerHeight(1, channel)
 	}
 
 	membershipCheck := func() bool {
-		for _, peers := range orgs2Peers {
-			for _, p := range peers {
-				peerNetMember := p.(*gossipServiceImpl).selfNetworkMember()
-				pkiID := peerNetMember.PKIid
-				peersKnown := p.Peers()
-				peersToKnow := amountOfPeersShouldKnow(pkiID)
-				if peersToKnow != len(peersKnown) {
-					t.Logf("peer %#v doesn't know the needed amount of peers, extected %#v, actual %#v", peerNetMember.Endpoint, peersToKnow, len(peersKnown))
+		for _, p := range peers {
+			peerNetMember := p.(*gossipServiceImpl).selfNetworkMember()
+			pkiID := peerNetMember.PKIid
+			peersKnown := p.Peers()
+			peersToKnow := expectedMembershipSize[string(pkiID)]
+			if peersToKnow != len(peersKnown) {
+				t.Logf("peer %#v doesn't know the needed amount of peers, extected %#v, actual %#v", peerNetMember.Endpoint, peersToKnow, len(peersKnown))
+				return false
+			}
+			for _, knownPeer := range peersKnown {
+				if !shouldAKnowB(pkiID, knownPeer.PKIid) {
+					assert.Fail(t, fmt.Sprintf("peer %#v doesn't know %#v", peerNetMember.Endpoint, knownPeer.Endpoint))
 					return false
 				}
-				for _, knownPeer := range peersKnown {
-					if !shouldAKnowB(pkiID, knownPeer.PKIid) {
-						assert.Fail(t, fmt.Sprintf("peer %#v doesn't know %#v", peerNetMember.Endpoint, knownPeer.Endpoint))
+				internalEndpointLen := len(knownPeer.InternalEndpoint)
+				if shouldKnowInternalEndpoint(pkiID, knownPeer.PKIid) {
+					if internalEndpointLen == 0 {
+						t.Logf("peer: %v doesn't know internal endpoint of %v", peerNetMember.InternalEndpoint, string(knownPeer.PKIid))
 						return false
 					}
-					internalEndpointLen := len(knownPeer.InternalEndpoint)
-					if shouldKnowInternalEndpoint(pkiID, knownPeer.PKIid) {
-						if internalEndpointLen == 0 {
-							t.Logf("peer: %v doesn't know internal endpoint of %v", peerNetMember.InternalEndpoint, string(knownPeer.PKIid))
-							return false
-						}
-					} else {
-						if internalEndpointLen != 0 {
-							assert.Fail(t, fmt.Sprintf("peer: %v knows internal endpoint of %v (%#v)", peerNetMember.InternalEndpoint, string(knownPeer.PKIid), knownPeer.InternalEndpoint))
-							return false
-						}
+				} else {
+					if internalEndpointLen != 0 {
+						assert.Fail(t, fmt.Sprintf("peer: %v knows internal endpoint of %v (%#v)", peerNetMember.InternalEndpoint, string(knownPeer.PKIid), knownPeer.InternalEndpoint))
+						return false
 					}
 				}
 			}
@@ -243,12 +235,10 @@ func TestMultipleOrgEndpointLeakage(t *testing.T) {
 		return true
 	}
 
-	waitUntilOrFail(t, membershipCheck)
+	waitUntilOrFail(t, membershipCheck, "waiting for all instances to form membership view")
 
-	for _, peers := range orgs2Peers {
-		for _, p := range peers {
-			p.Stop()
-		}
+	for _, p := range peers {
+		p.Stop()
 	}
 }
 
@@ -396,11 +386,11 @@ func TestConfidentiality(t *testing.T) {
 			if isOrgInChan(org, ch) {
 				for _, p := range peers {
 					p.JoinChan(joinChanMsgsByChan[ch], common.ChainID(ch))
-					p.UpdateChannelMetadata([]byte{}, common.ChainID(ch))
+					p.UpdateLedgerHeight(1, common.ChainID(ch))
 					go func(p Gossip) {
 						for i := 0; i < 5; i++ {
 							time.Sleep(time.Second)
-							p.UpdateChannelMetadata([]byte{}, common.ChainID(ch))
+							p.UpdateLedgerHeight(1, common.ChainID(ch))
 						}
 					}(p)
 				}
@@ -429,7 +419,7 @@ func TestConfidentiality(t *testing.T) {
 		return true
 	}
 
-	waitUntilOrFail(t, assertMembership)
+	waitUntilOrFail(t, assertMembership, "waiting for all instances to form unified membership view")
 	stopPeers(peers)
 	wg.Wait()
 	atomic.StoreInt32(&finished, int32(1))
@@ -481,9 +471,9 @@ func extractOrgsFromMsg(msg *proto.GossipMessage, sec api.SecurityAdvisor) []str
 		if msg.IsDigestMsg() || msg.IsDataReq() {
 			var digests []string
 			if msg.IsDigestMsg() {
-				digests = msg.GetDataDig().Digests
+				digests = util.BytesToStrings(msg.GetDataDig().Digests)
 			} else {
-				digests = msg.GetDataReq().Digests
+				digests = util.BytesToStrings(msg.GetDataReq().Digests)
 			}
 
 			for _, dig := range digests {

@@ -17,9 +17,8 @@ limitations under the License.
 package policy
 
 import (
-	"fmt"
-
 	"errors"
+	"fmt"
 
 	"github.com/hyperledger/fabric/common/policies"
 	"github.com/hyperledger/fabric/msp"
@@ -95,7 +94,7 @@ func (p *policyChecker) CheckPolicy(channelID, policyName string, signedProp *pb
 		return fmt.Errorf("Invalid Proposal's SignatureHeader during check policy on channel [%s] with policy [%s]: [%s]", channelID, policyName, err)
 	}
 
-	sd := []*common.SignedData{&common.SignedData{
+	sd := []*common.SignedData{{
 		Data:      signedProp.ProposalBytes,
 		Identity:  shdr.Creator,
 		Signature: signedProp.Signature,

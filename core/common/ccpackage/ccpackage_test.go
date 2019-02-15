@@ -39,7 +39,7 @@ func ownerCreateCCDepSpec(codepackage []byte, sigpolicy *common.SignaturePolicyE
 
 // create an instantiation policy with just the local msp admin
 func createInstantiationPolicy(mspid string, role mspprotos.MSPRole_MSPRoleType) *common.SignaturePolicyEnvelope {
-	principals := []*mspprotos.MSPPrincipal{&mspprotos.MSPPrincipal{
+	principals := []*mspprotos.MSPPrincipal{{
 		PrincipalClassification: mspprotos.MSPPrincipal_ROLE,
 		Principal:               utils.MarshalOrPanic(&mspprotos.MSPRole{Role: role, MspIdentifier: mspid})}}
 	sigspolicy := []*common.SignaturePolicy{cauthdsl.SignedBy(int32(0))}
@@ -159,6 +159,63 @@ func TestCreateSignedCCDepSpecForInstall(t *testing.T) {
 
 	if err = ValidateCip(cip1, cip2); err != nil {
 		t.Fatalf("fatal error validating cip1 (%v) against cip2(%v)", cip1, cip2)
+		return
+	}
+}
+
+func TestCreateSignedCCDepSpecForInstallWithEndorsements(t *testing.T) {
+	mspid, _ := localmsp.GetIdentifier()
+	sigpolicy := createInstantiationPolicy(mspid, mspprotos.MSPRole_ADMIN)
+	env1, err := ownerCreateCCDepSpec([]byte("codepackage"), sigpolicy, signer)
+	if err != nil || env1 == nil {
+		t.Fatalf("error owner creating package %s", err)
+		return
+	}
+
+	env2, err := ownerCreateCCDepSpec([]byte("codepackage"), sigpolicy, signer)
+	if err != nil || env2 == nil {
+		t.Fatalf("error owner creating package %s", err)
+		return
+	}
+
+	pack := []*common.Envelope{env1, env2}
+	env, err := CreateSignedCCDepSpecForInstall(pack)
+	if err != nil || env == nil {
+		t.Fatalf("error creating install package %s", err)
+		return
+	}
+
+	p := &common.Payload{}
+	if err = proto.Unmarshal(env.Payload, p); err != nil {
+		t.Fatalf("fatal error unmarshal payload")
+		return
+	}
+
+	cip2 := &peer.SignedChaincodeDeploymentSpec{}
+	if err = proto.Unmarshal(p.Data, cip2); err != nil {
+		t.Fatalf("fatal error unmarshal cip")
+		return
+	}
+
+	if len(cip2.OwnerEndorsements) != 2 {
+		t.Fatalf("invalid number of endorsements %d", len(cip2.OwnerEndorsements))
+		return
+	}
+
+	p = &common.Payload{}
+	if err = proto.Unmarshal(env1.Payload, p); err != nil {
+		t.Fatalf("fatal error unmarshal payload")
+		return
+	}
+
+	cip1 := &peer.SignedChaincodeDeploymentSpec{}
+	if err = proto.Unmarshal(p.Data, cip1); err != nil {
+		t.Fatalf("fatal error unmarshal cip")
+		return
+	}
+
+	if len(cip1.OwnerEndorsements) != 1 {
+		t.Fatalf("invalid number of endorsements %d", len(cip1.OwnerEndorsements))
 		return
 	}
 }

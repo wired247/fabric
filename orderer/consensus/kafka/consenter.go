@@ -7,30 +7,47 @@ SPDX-License-Identifier: Apache-2.0
 package kafka
 
 import (
-	"github.com/Shopify/sarama"
-	"github.com/hyperledger/fabric/common/flogging"
+	"github.com/hyperledger/fabric-lib-go/healthz"
+	"github.com/hyperledger/fabric/common/metrics"
 	localconfig "github.com/hyperledger/fabric/orderer/common/localconfig"
 	"github.com/hyperledger/fabric/orderer/consensus"
 	cb "github.com/hyperledger/fabric/protos/common"
+
+	"github.com/Shopify/sarama"
 	logging "github.com/op/go-logging"
 )
 
-const pkgLogID = "orderer/kafka"
+//go:generate counterfeiter -o mock/health_checker.go -fake-name HealthChecker . healthChecker
 
-var logger *logging.Logger
-
-func init() {
-	logger = flogging.MustGetLogger(pkgLogID)
+// healthChecker defines the contract for health checker
+type healthChecker interface {
+	RegisterChecker(component string, checker healthz.HealthChecker) error
 }
 
 // New creates a Kafka-based consenter. Called by orderer's main.go.
-func New(tlsConfig localconfig.TLS, retryOptions localconfig.Retry, kafkaVersion sarama.KafkaVersion) consensus.Consenter {
-	brokerConfig := newBrokerConfig(tlsConfig, retryOptions, kafkaVersion, defaultPartition)
+func New(config localconfig.Kafka, metricsProvider metrics.Provider, healthChecker healthChecker) (consensus.Consenter, *Metrics) {
+	if config.Verbose {
+		logging.SetLevel(logging.DEBUG, "orderer.consensus.kafka.sarama")
+	}
+
+	brokerConfig := newBrokerConfig(
+		config.TLS,
+		config.SASLPlain,
+		config.Retry,
+		config.Version,
+		defaultPartition)
+
 	return &consenterImpl{
 		brokerConfigVal: brokerConfig,
-		tlsConfigVal:    tlsConfig,
-		retryOptionsVal: retryOptions,
-		kafkaVersionVal: kafkaVersion}
+		tlsConfigVal:    config.TLS,
+		retryOptionsVal: config.Retry,
+		kafkaVersionVal: config.Version,
+		topicDetailVal: &sarama.TopicDetail{
+			NumPartitions:     1,
+			ReplicationFactor: config.Topic.ReplicationFactor,
+		},
+		healthChecker: healthChecker,
+	}, NewMetrics(metricsProvider, brokerConfig.MetricRegistry)
 }
 
 // consenterImpl holds the implementation of type that satisfies the
@@ -41,6 +58,8 @@ type consenterImpl struct {
 	tlsConfigVal    localconfig.TLS
 	retryOptionsVal localconfig.Retry
 	kafkaVersionVal sarama.KafkaVersion
+	topicDetailVal  *sarama.TopicDetail
+	healthChecker   healthChecker
 }
 
 // HandleChain creates/returns a reference to a consensus.Chain object for the
@@ -49,8 +68,13 @@ type consenterImpl struct {
 // multichannel.NewManagerImpl() when ranging over the ledgerFactory's
 // existingChains.
 func (consenter *consenterImpl) HandleChain(support consensus.ConsenterSupport, metadata *cb.Metadata) (consensus.Chain, error) {
-	lastOffsetPersisted := getLastOffsetPersisted(metadata.Value, support.ChainID())
-	return newChain(consenter, support, lastOffsetPersisted)
+	lastOffsetPersisted, lastOriginalOffsetProcessed, lastResubmittedConfigOffset := getOffsets(metadata.Value, support.ChainID())
+	ch, err := newChain(consenter, support, lastOffsetPersisted, lastOriginalOffsetProcessed, lastResubmittedConfigOffset)
+	if err != nil {
+		return nil, err
+	}
+	consenter.healthChecker.RegisterChecker(ch.channel.String(), ch)
+	return ch, nil
 }
 
 // commonConsenter allows us to retrieve the configuration options set on the
@@ -60,6 +84,7 @@ func (consenter *consenterImpl) HandleChain(support consensus.ConsenterSupport, 
 type commonConsenter interface {
 	brokerConfig() *sarama.Config
 	retryOptions() localconfig.Retry
+	topicDetail() *sarama.TopicDetail
 }
 
 func (consenter *consenterImpl) brokerConfig() *sarama.Config {
@@ -70,7 +95,6 @@ func (consenter *consenterImpl) retryOptions() localconfig.Retry {
 	return consenter.retryOptionsVal
 }
 
-// closeable allows the shut down of the calling resource.
-type closeable interface {
-	close() error
+func (consenter *consenterImpl) topicDetail() *sarama.TopicDetail {
+	return consenter.topicDetailVal
 }

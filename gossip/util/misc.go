@@ -25,6 +25,16 @@ type Equals func(a interface{}, b interface{}) bool
 
 var viperLock sync.RWMutex
 
+// Contains returns whether a given slice a contains a string s
+func Contains(s string, a []string) bool {
+	for _, e := range a {
+		if e == s {
+			return true
+		}
+	}
+	return false
+}
+
 // IndexInSlice returns the index of given object o in array
 func IndexInSlice(array interface{}, o interface{}, equals Equals) int {
 	arr := reflect.ValueOf(array)
@@ -147,6 +157,18 @@ func GetIntOrDefault(key string, defVal int) int {
 	return defVal
 }
 
+// GetFloat64OrDefault returns the float64 value from config if present otherwise default value
+func GetFloat64OrDefault(key string, defVal float64) float64 {
+	viperLock.RLock()
+	defer viperLock.RUnlock()
+
+	if val := viper.GetFloat64(key); val != 0 {
+		return val
+	}
+
+	return defVal
+}
+
 // GetDurationOrDefault returns the Duration value from config if present otherwise default value
 func GetDurationOrDefault(key string, defVal time.Duration) time.Duration {
 	viperLock.RLock()
@@ -159,8 +181,8 @@ func GetDurationOrDefault(key string, defVal time.Duration) time.Duration {
 	return defVal
 }
 
-// SetDuration stores duration key value to viper
-func SetDuration(key string, val time.Duration) {
+// SetVal stores key value to viper
+func SetVal(key string, val interface{}) {
 	viperLock.Lock()
 	defer viperLock.Unlock()
 	viper.Set(key, val)
@@ -189,4 +211,20 @@ func RandomUInt64() uint64 {
 	}
 	rand.Seed(rand.Int63())
 	return uint64(rand.Int63())
+}
+
+func BytesToStrings(bytes [][]byte) []string {
+	strings := make([]string, len(bytes))
+	for i, b := range bytes {
+		strings[i] = string(b)
+	}
+	return strings
+}
+
+func StringsToBytes(strings []string) [][]byte {
+	bytes := make([][]byte, len(strings))
+	for i, str := range strings {
+		bytes[i] = []byte(str)
+	}
+	return bytes
 }

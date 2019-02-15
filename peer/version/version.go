@@ -26,26 +26,29 @@ var cobraCommand = &cobra.Command{
 	Use:   "version",
 	Short: "Print fabric peer version.",
 	Long:  `Print current version of the fabric peer server.`,
-	Run: func(cmd *cobra.Command, args []string) {
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) != 0 {
+			return fmt.Errorf("trailing args detected")
+		}
+		// Parsing of the command line is done so silence cmd usage
+		cmd.SilenceUsage = true
 		fmt.Print(GetInfo())
+		return nil
 	},
 }
 
 // GetInfo returns version information for the peer
 func GetInfo() string {
-	if metadata.Version == "" {
-		metadata.Version = "development build"
-	}
-
-	ccinfo := fmt.Sprintf(" Base Image Version: %s\n"+
-		"  Base Docker Namespace: %s\n"+
+	ccinfo := fmt.Sprintf("  Base Docker Namespace: %s\n"+
 		"  Base Docker Label: %s\n"+
 		"  Docker Namespace: %s\n",
-		metadata.BaseVersion, metadata.BaseDockerNamespace,
-		metadata.BaseDockerLabel, metadata.DockerNamespace)
+		metadata.BaseDockerNamespace,
+		metadata.BaseDockerLabel,
+		metadata.DockerNamespace)
 
-	return fmt.Sprintf("%s:\n Version: %s\n Go version: %s\n OS/Arch: %s\n"+
-		" Chaincode:\n %s\n",
-		ProgramName, metadata.Version, runtime.Version(),
+	return fmt.Sprintf("%s:\n Version: %s\n Commit SHA: %s\n Go version: %s\n"+
+		" OS/Arch: %s\n"+
+		" Chaincode:\n%s\n",
+		ProgramName, metadata.Version, metadata.CommitSHA, runtime.Version(),
 		fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH), ccinfo)
 }

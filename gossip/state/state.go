@@ -13,14 +13,17 @@ import (
 	"time"
 
 	pb "github.com/golang/protobuf/proto"
+	vsccErrors "github.com/hyperledger/fabric/common/errors"
 	"github.com/hyperledger/fabric/gossip/api"
 	"github.com/hyperledger/fabric/gossip/comm"
 	common2 "github.com/hyperledger/fabric/gossip/common"
 	"github.com/hyperledger/fabric/gossip/discovery"
+	"github.com/hyperledger/fabric/gossip/metrics"
 	"github.com/hyperledger/fabric/gossip/util"
 	"github.com/hyperledger/fabric/protos/common"
 	proto "github.com/hyperledger/fabric/protos/gossip"
-	"github.com/op/go-logging"
+	"github.com/hyperledger/fabric/protos/ledger/rwset"
+	"github.com/hyperledger/fabric/protos/transientstore"
 	"github.com/pkg/errors"
 	"github.com/spf13/viper"
 )
@@ -29,9 +32,6 @@ import (
 // capable to full fill missing blocks by running state replication and
 // sending request to get missing block to other nodes
 type GossipStateProvider interface {
-	// Retrieve block with sequence number equal to index
-	GetBlock(index uint64) *common.Block
-
 	AddPayload(payload *proto.Payload) error
 
 	// Stop terminates state transfer object
@@ -65,9 +65,9 @@ type GossipAdapter interface {
 	// can be used to send a reply back to the sender
 	Accept(acceptor common2.MessageAcceptor, passThrough bool) (<-chan *proto.GossipMessage, <-chan proto.ReceivedMessage)
 
-	// UpdateChannelMetadata updates the self metadata the peer
-	// publishes to other peers about its channel-related state
-	UpdateChannelMetadata(metadata []byte, chainID common2.ChainID)
+	// UpdateLedgerHeight updates the ledger height the peer
+	// publishes to other peers in the channel
+	UpdateLedgerHeight(height uint64, chainID common2.ChainID)
 
 	// PeersOfChannel returns the NetworkMembers considered alive
 	// and also subscribed to the channel given
@@ -93,16 +93,16 @@ type MCSAdapter interface {
 type ledgerResources interface {
 	// StoreBlock deliver new block with underlined private data
 	// returns missing transaction ids
-	StoreBlock(block *common.Block, data util.PvtDataCollections) ([]string, error)
+	StoreBlock(block *common.Block, data util.PvtDataCollections) error
+
+	// StorePvtData used to persist private date into transient store
+	StorePvtData(txid string, privData *transientstore.TxPvtReadWriteSetWithConfigInfo, blckHeight uint64) error
 
 	// GetPvtDataAndBlockByNum get block by number and returns also all related private data
-	// the order of private data in slice of PvtDataCollections doesn't implies the order of
+	// the order of private data in slice of PvtDataCollections doesn't imply the order of
 	// transactions in the block related to these private data, to get the correct placement
 	// need to read TxPvtData.SeqInBlock field
-	GetPvtDataAndBlockByNum(seqNum uint64) (*common.Block, util.PvtDataCollections, error)
-
-	// GetBlockByNum returns block and related to the block private data
-	GetBlockByNum(seqNum uint64) (*common.Block, error)
+	GetPvtDataAndBlockByNum(seqNum uint64, peerAuthInfo common.SignedData) (*common.Block, util.PvtDataCollections, error)
 
 	// Get recent block sequence number
 	LedgerHeight() (uint64, error)
@@ -122,7 +122,6 @@ type ServicesMediator struct {
 // the struct to handle in memory sliding window of
 // new ledger block to be acquired by hyper ledger
 type GossipStateProviderImpl struct {
-
 	// Chain id
 	chainID string
 
@@ -149,19 +148,34 @@ type GossipStateProviderImpl struct {
 	once sync.Once
 
 	stateTransferActive int32
+
+	stateMetrics *metrics.StateMetrics
+
+	requestValidator *stateRequestValidator
 }
 
-var logger *logging.Logger // package-level logger
+var logger = util.GetLogger(util.StateLogger, "")
 
-func init() {
-	logger = util.GetLogger(util.LoggingStateModule, "")
+// stateRequestValidator facilitates validation of the state request messages
+type stateRequestValidator struct {
 }
 
-// NewGossipCoordinatedStateProvider creates state provider with coordinator instance
+// validate checks for RemoteStateRequest message validity
+func (v *stateRequestValidator) validate(request *proto.RemoteStateRequest) error {
+	if request.StartSeqNum > request.EndSeqNum {
+		return errors.Errorf("Invalid sequence interval [%d...%d).", request.StartSeqNum, request.EndSeqNum)
+	}
+
+	if request.EndSeqNum > defAntiEntropyBatchSize+request.StartSeqNum {
+		return errors.Errorf("Requesting blocks range [%d-%d) greater than configured allowed"+
+			" (%d) batching size for anti-entropy.", request.StartSeqNum, request.EndSeqNum, defAntiEntropyBatchSize)
+	}
+	return nil
+}
+
+// NewGossipStateProvider creates state provider with coordinator instance
 // to orchestrate arrival of private rwsets and blocks before committing them into the ledger.
-func NewGossipStateProvider(chainID string, services *ServicesMediator, ledger ledgerResources) GossipStateProvider {
-
-	logger := util.GetLogger(util.LoggingStateModule, "")
+func NewGossipStateProvider(chainID string, services *ServicesMediator, ledger ledgerResources, stateMetrics *metrics.StateMetrics) GossipStateProvider {
 
 	gossipChan, _ := services.Accept(func(message interface{}) bool {
 		// Get only data messages
@@ -172,18 +186,17 @@ func NewGossipStateProvider(chainID string, services *ServicesMediator, ledger l
 	remoteStateMsgFilter := func(message interface{}) bool {
 		receivedMsg := message.(proto.ReceivedMessage)
 		msg := receivedMsg.GetGossipMessage()
-		if !msg.IsRemoteStateMessage() {
+		if !(msg.IsRemoteStateMessage() || msg.GetPrivateData() != nil) {
 			return false
 		}
-		// If we're not running with authentication, no point
-		// in enforcing access control
-		if !receivedMsg.GetConnectionInfo().IsAuthenticated() {
-			return true
+		// Ensure we deal only with messages that belong to this channel
+		if !bytes.Equal(msg.Channel, []byte(chainID)) {
+			return false
 		}
 		connInfo := receivedMsg.GetConnectionInfo()
 		authErr := services.VerifyByChannel(msg.Channel, connInfo.Identity, connInfo.Auth.Signature, connInfo.Auth.SignedData)
 		if authErr != nil {
-			logger.Warning("Got unauthorized nodeMetastate transfer request from", string(connInfo.Identity))
+			logger.Warning("Got unauthorized request from", string(connInfo.Identity))
 			return false
 		}
 		return true
@@ -219,8 +232,12 @@ func NewGossipStateProvider(chainID string, services *ServicesMediator, ledger l
 		// Channel to read direct messages from other peers
 		commChan: commChan,
 
-		// Create a queue for payload received
-		payloads: NewPayloadsBuffer(height),
+		// Create a queue for payloads, wrapped in a metrics buffer
+		payloads: &metricsBuffer{
+			PayloadsBuffer: NewPayloadsBuffer(height),
+			sizeMetrics:    stateMetrics.PayloadBufferSize,
+			chainID:        chainID,
+		},
 
 		ledger: ledger,
 
@@ -233,20 +250,16 @@ func NewGossipStateProvider(chainID string, services *ServicesMediator, ledger l
 		stateTransferActive: 0,
 
 		once: sync.Once{},
+
+		stateMetrics: stateMetrics,
+
+		requestValidator: &stateRequestValidator{},
 	}
 
-	nodeMetastate := common2.NewNodeMetastate(height - 1)
-
-	logger.Infof("Updating node metadata information, "+
-		"current ledger sequence is at = %d, next expected block is = %d", nodeMetastate.LedgerHeight, s.payloads.Next())
-
-	b, err := nodeMetastate.Bytes()
-	if err == nil {
-		logger.Debug("Updating gossip metadate nodeMetastate", nodeMetastate)
-		services.UpdateChannelMetadata(b, common2.ChainID(s.chainID))
-	} else {
-		logger.Errorf("Unable to serialize node meta nodeMetastate, error = %+v", errors.WithStack(err))
-	}
+	logger.Infof("Updating metadata information, "+
+		"current ledger sequence is at = %d, next expected block is = %d", height-1, s.payloads.Next())
+	logger.Debug("Updating gossip ledger height to", height)
+	services.UpdateLedgerHeight(height, common2.ChainID(s.chainID))
 
 	s.done.Add(4)
 
@@ -271,14 +284,77 @@ func (s *GossipStateProviderImpl) listen() {
 			logger.Debug("Received new message via gossip channel")
 			go s.queueNewMessage(msg)
 		case msg := <-s.commChan:
-			logger.Debug("Direct message ", msg)
-			go s.directMessage(msg)
+			logger.Debug("Dispatching a message", msg)
+			go s.dispatch(msg)
 		case <-s.stopCh:
 			s.stopCh <- struct{}{}
 			logger.Debug("Stop listening for new messages")
 			return
 		}
 	}
+}
+func (s *GossipStateProviderImpl) dispatch(msg proto.ReceivedMessage) {
+	// Check type of the message
+	if msg.GetGossipMessage().IsRemoteStateMessage() {
+		logger.Debug("Handling direct state transfer message")
+		// Got state transfer request response
+		s.directMessage(msg)
+	} else if msg.GetGossipMessage().GetPrivateData() != nil {
+		logger.Debug("Handling private data collection message")
+		// Handling private data replication message
+		s.privateDataMessage(msg)
+	}
+
+}
+func (s *GossipStateProviderImpl) privateDataMessage(msg proto.ReceivedMessage) {
+	if !bytes.Equal(msg.GetGossipMessage().Channel, []byte(s.chainID)) {
+		logger.Warning("Received state transfer request for channel",
+			string(msg.GetGossipMessage().Channel), "while expecting channel", s.chainID, "skipping request...")
+		return
+	}
+
+	gossipMsg := msg.GetGossipMessage()
+	pvtDataMsg := gossipMsg.GetPrivateData()
+
+	if pvtDataMsg.Payload == nil {
+		logger.Warning("Malformed private data message, no payload provided")
+		return
+	}
+
+	collectionName := pvtDataMsg.Payload.CollectionName
+	txID := pvtDataMsg.Payload.TxId
+	pvtRwSet := pvtDataMsg.Payload.PrivateRwset
+
+	if len(pvtRwSet) == 0 {
+		logger.Warning("Malformed private data message, no rwset provided, collection name = ", collectionName)
+		return
+	}
+
+	txPvtRwSet := &rwset.TxPvtReadWriteSet{
+		DataModel: rwset.TxReadWriteSet_KV,
+		NsPvtRwset: []*rwset.NsPvtReadWriteSet{{
+			Namespace: pvtDataMsg.Payload.Namespace,
+			CollectionPvtRwset: []*rwset.CollectionPvtReadWriteSet{{
+				CollectionName: collectionName,
+				Rwset:          pvtRwSet,
+			}}},
+		},
+	}
+
+	txPvtRwSetWithConfig := &transientstore.TxPvtReadWriteSetWithConfigInfo{
+		PvtRwset: txPvtRwSet,
+		CollectionConfigs: map[string]*common.CollectionConfigPackage{
+			pvtDataMsg.Payload.Namespace: pvtDataMsg.Payload.CollectionConfigs,
+		},
+	}
+
+	if err := s.ledger.StorePvtData(txID, txPvtRwSetWithConfig, pvtDataMsg.Payload.PrivateSimHeight); err != nil {
+		logger.Errorf("Wasn't able to persist private data for collection %s, due to %s", collectionName, err)
+		msg.Ack(err) // Sending NACK to indicate failure of storing collection
+	}
+
+	msg.Ack(nil)
+	logger.Debug("Private data for collection", collectionName, "has been stored")
 }
 
 func (s *GossipStateProviderImpl) directMessage(msg proto.ReceivedMessage) {
@@ -328,29 +404,22 @@ func (s *GossipStateProviderImpl) processStateRequests() {
 	}
 }
 
-// Handle state request message, validate batch size, read current leader state to
-// obtain required blocks, build response message and send it back
+// handleStateRequest handles state request message, validate batch size, reads current leader state to
+// obtain required blocks, builds response message and send it back
 func (s *GossipStateProviderImpl) handleStateRequest(msg proto.ReceivedMessage) {
 	if msg == nil {
 		return
 	}
 	request := msg.GetGossipMessage().GetStateRequest()
 
-	batchSize := request.EndSeqNum - request.StartSeqNum
-	if batchSize > defAntiEntropyBatchSize {
-		logger.Errorf("Requesting blocks batchSize size (%d) greater than configured allowed"+
-			" (%d) batching for anti-entropy. Ignoring request...", batchSize, defAntiEntropyBatchSize)
-		return
-	}
-
-	if request.StartSeqNum > request.EndSeqNum {
-		logger.Errorf("Invalid sequence interval [%d...%d], ignoring request...", request.StartSeqNum, request.EndSeqNum)
+	if err := s.requestValidator.validate(request); err != nil {
+		logger.Errorf("State request validation failed, %s. Ignoring request...", err)
 		return
 	}
 
 	currentHeight, err := s.ledger.LedgerHeight()
 	if err != nil {
-		logger.Errorf("Cannot access to current ledger height, due to %+v", errors.WithStack(err))
+		logger.Errorf("Cannot access to current ledger height, due to %+v", err)
 		return
 	}
 	if currentHeight < request.EndSeqNum {
@@ -363,11 +432,16 @@ func (s *GossipStateProviderImpl) handleStateRequest(msg proto.ReceivedMessage) 
 	response := &proto.RemoteStateResponse{Payloads: make([]*proto.Payload, 0)}
 	for seqNum := request.StartSeqNum; seqNum <= endSeqNum; seqNum++ {
 		logger.Debug("Reading block ", seqNum, " with private data from the coordinator service")
-		block, pvtData, err := s.ledger.GetPvtDataAndBlockByNum(seqNum)
+		connInfo := msg.GetConnectionInfo()
+		peerAuthInfo := common.SignedData{
+			Data:      connInfo.Auth.SignedData,
+			Signature: connInfo.Auth.Signature,
+			Identity:  connInfo.Identity,
+		}
+		block, pvtData, err := s.ledger.GetPvtDataAndBlockByNum(seqNum, peerAuthInfo)
 
 		if err != nil {
-			logger.Errorf("Wasn't able to read block with sequence number %d from ledger, "+
-				"due to %+v skipping....", seqNum, errors.WithStack(err))
+			logger.Errorf("cannot read block number %d from ledger, because %+v, skipping...", seqNum, err)
 			continue
 		}
 
@@ -406,7 +480,7 @@ func (s *GossipStateProviderImpl) handleStateRequest(msg proto.ReceivedMessage) 
 		Nonce:   msg.GetGossipMessage().Nonce,
 		Tag:     proto.GossipMessage_CHAN_OR_ORG,
 		Channel: []byte(s.chainID),
-		Content: &proto.GossipMessage_StateResponse{response},
+		Content: &proto.GossipMessage_StateResponse{StateResponse: response},
 	})
 }
 
@@ -428,15 +502,16 @@ func (s *GossipStateProviderImpl) handleStateResponse(msg proto.ReceivedMessage)
 		if max < payload.SeqNum {
 			max = payload.SeqNum
 		}
-		err := s.payloads.Push(payload)
+
+		err := s.addPayload(payload, blocking)
 		if err != nil {
-			logger.Warningf("Payload with sequence number %d was received earlier", payload.SeqNum)
+			logger.Warningf("Block [%d] received from block transfer wasn't added to payload buffer: %v", payload.SeqNum, err)
 		}
 	}
 	return max, nil
 }
 
-// Stop function send halting signal to all go routines
+// Stop function sends halting signal to all go routines
 func (s *GossipStateProviderImpl) Stop() {
 	// Make sure stop won't be executed twice
 	// and stop channel won't be used again
@@ -452,7 +527,7 @@ func (s *GossipStateProviderImpl) Stop() {
 	})
 }
 
-// New message notification/handler
+// queueNewMessage makes new message notification/handler
 func (s *GossipStateProviderImpl) queueNewMessage(msg *proto.GossipMessage) {
 	if !bytes.Equal(msg.Channel, []byte(s.chainID)) {
 		logger.Warning("Received enqueue for channel",
@@ -463,10 +538,10 @@ func (s *GossipStateProviderImpl) queueNewMessage(msg *proto.GossipMessage) {
 	dataMsg := msg.GetDataMsg()
 	if dataMsg != nil {
 		if err := s.addPayload(dataMsg.GetPayload(), nonBlocking); err != nil {
-			logger.Warning("Failed adding payload:", err)
+			logger.Warningf("Block [%d] received from gossip wasn't added to payload buffer: %v", dataMsg.Payload.SeqNum, err)
 			return
 		}
-		logger.Debugf("Received new payload with sequence number = [%d]", dataMsg.Payload.SeqNum)
+
 	} else {
 		logger.Debug("Gossip message received is not of data message type, usually this should not happen.")
 	}
@@ -479,7 +554,7 @@ func (s *GossipStateProviderImpl) deliverPayloads() {
 		select {
 		// Wait for notification that next seq has arrived
 		case <-s.payloads.Ready():
-			logger.Debugf("Ready to transfer payloads to the ledger, next sequence number is = [%d]", s.payloads.Next())
+			logger.Debugf("[%s] Ready to transfer payloads (blocks) to the ledger, next block number is = [%d]", s.chainID, s.payloads.Next())
 			// Collect all subsequent payloads
 			for payload := s.payloads.Pop(); payload != nil; payload = s.payloads.Pop() {
 				rawBlock := &common.Block{}
@@ -492,7 +567,7 @@ func (s *GossipStateProviderImpl) deliverPayloads() {
 						payload.SeqNum, rawBlock.Header, rawBlock.Data)
 					continue
 				}
-				logger.Debug("New block with claimed sequence number ", payload.SeqNum, " transactions num ", len(rawBlock.Data.Data))
+				logger.Debugf("[%s] Transferring block [%d] with %d transaction(s) to the ledger", s.chainID, payload.SeqNum, len(rawBlock.Data.Data))
 
 				// Read all private data into slice
 				var p util.PvtDataCollections
@@ -503,8 +578,11 @@ func (s *GossipStateProviderImpl) deliverPayloads() {
 						continue
 					}
 				}
-
 				if err := s.commitBlock(rawBlock, p); err != nil {
+					if executionErr, isExecutionErr := err.(*vsccErrors.VSCCExecutionFailureError); isExecutionErr {
+						logger.Errorf("Failed executing VSCC due to %v. Aborting chain processing", executionErr)
+						return
+					}
 					logger.Panicf("Cannot commit block to the ledger due to %+v", errors.WithStack(err))
 				}
 			}
@@ -526,43 +604,45 @@ func (s *GossipStateProviderImpl) antiEntropy() {
 			s.stopCh <- struct{}{}
 			return
 		case <-time.After(defAntiEntropyInterval):
-			current, err := s.ledger.LedgerHeight()
+			ourHeight, err := s.ledger.LedgerHeight()
 			if err != nil {
 				// Unable to read from ledger continue to the next round
 				logger.Errorf("Cannot obtain ledger height, due to %+v", errors.WithStack(err))
 				continue
 			}
-			if current == 0 {
+			if ourHeight == 0 {
 				logger.Error("Ledger reported block height of 0 but this should be impossible")
 				continue
 			}
-			max := s.maxAvailableLedgerHeight()
-
-			if current-1 >= max {
+			maxHeight := s.maxAvailableLedgerHeight()
+			if ourHeight >= maxHeight {
 				continue
 			}
 
-			s.requestBlocksInRange(uint64(current), uint64(max))
+			s.requestBlocksInRange(uint64(ourHeight), uint64(maxHeight)-1)
 		}
 	}
 }
 
-// Iterate over all available peers and check advertised meta state to
+// maxAvailableLedgerHeight iterates over all available peers and checks advertised meta state to
 // find maximum available ledger height across peers
 func (s *GossipStateProviderImpl) maxAvailableLedgerHeight() uint64 {
 	max := uint64(0)
 	for _, p := range s.mediator.PeersOfChannel(common2.ChainID(s.chainID)) {
-		if nodeMetastate, err := common2.FromBytes(p.Metadata); err == nil {
-			if max < nodeMetastate.LedgerHeight {
-				max = nodeMetastate.LedgerHeight
-			}
+		if p.Properties == nil {
+			logger.Debug("Peer", p.PreferredEndpoint(), "doesn't have properties, skipping it")
+			continue
+		}
+		peerHeight := p.Properties.LedgerHeight
+		if max < peerHeight {
+			max = peerHeight
 		}
 	}
 	return max
 }
 
-// GetBlocksInRange capable to acquire blocks with sequence
-// numbers in the range [start...end].
+// requestBlocksInRange capable to acquire blocks with sequence
+// numbers in the range [start...end).
 func (s *GossipStateProviderImpl) requestBlocksInRange(start uint64, end uint64) {
 	atomic.StoreInt32(&s.stateTransferActive, 1)
 	defer atomic.StoreInt32(&s.stateTransferActive, 0)
@@ -577,19 +657,19 @@ func (s *GossipStateProviderImpl) requestBlocksInRange(start uint64, end uint64)
 
 		for !responseReceived {
 			if tryCounts > defAntiEntropyMaxRetries {
-				logger.Warningf("Wasn't  able to get blocks in range [%d...%d], after %d retries",
+				logger.Warningf("Wasn't  able to get blocks in range [%d...%d), after %d retries",
 					prev, next, tryCounts)
 				return
 			}
 			// Select peers to ask for blocks
 			peer, err := s.selectPeerToRequestFrom(next)
 			if err != nil {
-				logger.Warningf("Cannot send state request for blocks in range [%d...%d], due to %+v",
+				logger.Warningf("Cannot send state request for blocks in range [%d...%d), due to %+v",
 					prev, next, errors.WithStack(err))
 				return
 			}
 
-			logger.Debugf("State transfer, with peer %s, requesting blocks in range [%d...%d], "+
+			logger.Debugf("State transfer, with peer %s, requesting blocks in range [%d...%d), "+
 				"for chainID %s", peer.Endpoint, prev, next, s.chainID)
 
 			s.mediator.Send(gossipMsg, peer)
@@ -619,7 +699,7 @@ func (s *GossipStateProviderImpl) requestBlocksInRange(start uint64, end uint64)
 	}
 }
 
-// Generate state request message for given blocks in range [beginSeq...endSeq]
+// stateRequestMessage generates state request message for given blocks in range [beginSeq...endSeq]
 func (s *GossipStateProviderImpl) stateRequestMessage(beginSeq uint64, endSeq uint64) *proto.GossipMessage {
 	return &proto.GossipMessage{
 		Nonce:   util.RandomUInt64(),
@@ -634,7 +714,7 @@ func (s *GossipStateProviderImpl) stateRequestMessage(beginSeq uint64, endSeq ui
 	}
 }
 
-// Select peer which has required blocks to ask missing blocks from
+// selectPeerToRequestFrom selects peer which has required blocks to ask missing blocks from
 func (s *GossipStateProviderImpl) selectPeerToRequestFrom(height uint64) (*comm.RemotePeer, error) {
 	// Filter peers which posses required range of missing blocks
 	peers := s.filterPeers(s.hasRequiredHeight(height))
@@ -644,11 +724,11 @@ func (s *GossipStateProviderImpl) selectPeerToRequestFrom(height uint64) (*comm.
 		return nil, errors.New("there are no peers to ask for missing blocks from")
 	}
 
-	// Select peers to ask for blocks
+	// Select peer to ask for blocks
 	return peers[util.RandomInt(n)], nil
 }
 
-// filterPeers return list of peers which aligns the predicate provided
+// filterPeers returns list of peers which aligns the predicate provided
 func (s *GossipStateProviderImpl) filterPeers(predicate func(peer discovery.NetworkMember) bool) []*comm.RemotePeer {
 	var peers []*comm.RemotePeer
 
@@ -665,28 +745,15 @@ func (s *GossipStateProviderImpl) filterPeers(predicate func(peer discovery.Netw
 // by provided input parameter
 func (s *GossipStateProviderImpl) hasRequiredHeight(height uint64) func(peer discovery.NetworkMember) bool {
 	return func(peer discovery.NetworkMember) bool {
-		if nodeMetadata, err := common2.FromBytes(peer.Metadata); err != nil {
-			logger.Errorf("Unable to de-serialize node meta state, error = %+v", errors.WithStack(err))
-		} else if nodeMetadata.LedgerHeight >= height {
-			return true
+		if peer.Properties != nil {
+			return peer.Properties.LedgerHeight >= height
 		}
-
+		logger.Debug(peer.PreferredEndpoint(), "doesn't have properties")
 		return false
 	}
 }
 
-// GetBlock return ledger block given its sequence number as a parameter
-func (s *GossipStateProviderImpl) GetBlock(index uint64) *common.Block {
-	// Try to read missing block from the ledger, should return no nil with
-	// content including at least one block
-	if block, err := s.ledger.GetBlockByNum(index); block != nil && err != nil {
-		return block
-	}
-
-	return nil
-}
-
-// AddPayload add new payload into state.
+// AddPayload adds new payload into state.
 func (s *GossipStateProviderImpl) AddPayload(payload *proto.Payload) error {
 	blockingMode := blocking
 	if viper.GetBool("peer.gossip.nonBlockingCommitMode") {
@@ -695,7 +762,7 @@ func (s *GossipStateProviderImpl) AddPayload(payload *proto.Payload) error {
 	return s.addPayload(payload, blockingMode)
 }
 
-// addPayload add new payload into state. It may (or may not) block according to the
+// addPayload adds new payload into state. It may (or may not) block according to the
 // given parameter. If it gets a block while in blocking mode - it would wait until
 // the block is sent into the payloads buffer.
 // Else - it may drop the block, if the payload buffer is too full.
@@ -703,7 +770,7 @@ func (s *GossipStateProviderImpl) addPayload(payload *proto.Payload, blockingMod
 	if payload == nil {
 		return errors.New("Given payload is nil")
 	}
-	logger.Debug("Adding new payload into the buffer, seqNum = ", payload.SeqNum)
+	logger.Debugf("[%s] Adding payload to local buffer, blockNum = [%d]", s.chainID, payload.SeqNum)
 	height, err := s.ledger.LedgerHeight()
 	if err != nil {
 		return errors.Wrap(err, "Failed obtaining ledger height")
@@ -717,30 +784,29 @@ func (s *GossipStateProviderImpl) addPayload(payload *proto.Payload, blockingMod
 		time.Sleep(enqueueRetryInterval)
 	}
 
-	return s.payloads.Push(payload)
+	s.payloads.Push(payload)
+	return nil
 }
 
 func (s *GossipStateProviderImpl) commitBlock(block *common.Block, pvtData util.PvtDataCollections) error {
 
+	t1 := time.Now()
+
 	// Commit block with available private transactions
-	if _, err := s.ledger.StoreBlock(block, pvtData); err != nil {
+	if err := s.ledger.StoreBlock(block, pvtData); err != nil {
 		logger.Errorf("Got error while committing(%+v)", errors.WithStack(err))
 		return err
 	}
 
-	// Update ledger level within node metadata
-	nodeMetastate := common2.NewNodeMetastate(block.Header.Number)
-	// Decode nodeMetastate to byte array
-	b, err := nodeMetastate.Bytes()
-	if err == nil {
-		s.mediator.UpdateChannelMetadata(b, common2.ChainID(s.chainID))
-	} else {
+	sinceT1 := time.Since(t1)
+	s.stateMetrics.CommitDuration.With("channel", s.chainID).Observe(sinceT1.Seconds())
 
-		logger.Errorf("Unable to serialize node meta nodeMetastate, error = %+v", errors.WithStack(err))
-	}
-
-	logger.Debugf("Channel [%s]: Created block [%d] with %d transaction(s)",
+	// Update ledger height
+	s.mediator.UpdateLedgerHeight(block.Header.Number+1, common2.ChainID(s.chainID))
+	logger.Debugf("[%s] Committed block [%d] with %d transaction(s)",
 		s.chainID, block.Header.Number, len(block.Data.Data))
+
+	s.stateMetrics.Height.With("channel", s.chainID).Set(float64(block.Header.Number + 1))
 
 	return nil
 }

@@ -32,7 +32,14 @@ import (
 func TestCheckPolicyInvalidArgs(t *testing.T) {
 	policyManagerGetter := &mocks.MockChannelPolicyManagerGetter{
 		Managers: map[string]policies.Manager{
-			"A": &mocks.MockChannelPolicyManager{&mocks.MockPolicy{&mocks.MockIdentityDeserializer{[]byte("Alice"), []byte("msg1")}}},
+			"A": &mocks.MockChannelPolicyManager{
+				MockPolicy: &mocks.MockPolicy{
+					Deserializer: &mocks.MockIdentityDeserializer{
+						Identity: []byte("Alice"),
+						Msg:      []byte("msg1"),
+					},
+				},
+			},
 		},
 	}
 	pc := &policyChecker{channelPolicyManagerGetter: policyManagerGetter}
@@ -54,7 +61,14 @@ func TestRegisterPolicyCheckerFactoryInvalidArgs(t *testing.T) {
 func TestRegisterPolicyCheckerFactory(t *testing.T) {
 	policyManagerGetter := &mocks.MockChannelPolicyManagerGetter{
 		Managers: map[string]policies.Manager{
-			"A": &mocks.MockChannelPolicyManager{&mocks.MockPolicy{&mocks.MockIdentityDeserializer{[]byte("Alice"), []byte("msg1")}}},
+			"A": &mocks.MockChannelPolicyManager{
+				MockPolicy: &mocks.MockPolicy{
+					Deserializer: &mocks.MockIdentityDeserializer{
+						Identity: []byte("Alice"),
+						Msg:      []byte("msg1"),
+					},
+				},
+			},
 		},
 	}
 	pc := &policyChecker{channelPolicyManagerGetter: policyManagerGetter}
@@ -70,16 +84,22 @@ func TestRegisterPolicyCheckerFactory(t *testing.T) {
 func TestCheckPolicyBySignedDataInvalidArgs(t *testing.T) {
 	policyManagerGetter := &mocks.MockChannelPolicyManagerGetter{
 		Managers: map[string]policies.Manager{
-			"A": &mocks.MockChannelPolicyManager{&mocks.MockPolicy{&mocks.MockIdentityDeserializer{[]byte("Alice"), []byte("msg1")}}},
+			"A": &mocks.MockChannelPolicyManager{
+				MockPolicy: &mocks.MockPolicy{
+					Deserializer: &mocks.MockIdentityDeserializer{
+						Identity: []byte("Alice"),
+						Msg:      []byte("msg1"),
+					}},
+			},
 		},
 	}
 	pc := &policyChecker{channelPolicyManagerGetter: policyManagerGetter}
 
-	err := pc.CheckPolicyBySignedData("", "admin", []*common.SignedData{&common.SignedData{}})
+	err := pc.CheckPolicyBySignedData("", "admin", []*common.SignedData{{}})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "Invalid channel ID name during check policy on signed data. Name must be different from nil.")
 
-	err = pc.CheckPolicyBySignedData("A", "", []*common.SignedData{&common.SignedData{}})
+	err = pc.CheckPolicyBySignedData("A", "", []*common.SignedData{{}})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "Invalid policy name during check policy on signed data on channel [A]. Name must be different from nil.")
 
@@ -87,24 +107,42 @@ func TestCheckPolicyBySignedDataInvalidArgs(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "Invalid signed data during check policy on channel [A] with policy [admin]")
 
-	err = pc.CheckPolicyBySignedData("B", "admin", []*common.SignedData{&common.SignedData{}})
+	err = pc.CheckPolicyBySignedData("B", "admin", []*common.SignedData{{}})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "Failed to get policy manager for channel [B]")
 
-	err = pc.CheckPolicyBySignedData("A", "admin", []*common.SignedData{&common.SignedData{}})
+	err = pc.CheckPolicyBySignedData("A", "admin", []*common.SignedData{{}})
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "Failed evaluating policy on signed data during check policy on channel [A] with policy [admin]")
 }
 
 func TestPolicyCheckerInvalidArgs(t *testing.T) {
 	policyManagerGetter := &mocks.MockChannelPolicyManagerGetter{
-		map[string]policies.Manager{
-			"A": &mocks.MockChannelPolicyManager{&mocks.MockPolicy{&mocks.MockIdentityDeserializer{[]byte("Alice"), []byte("msg1")}}},
-			"B": &mocks.MockChannelPolicyManager{&mocks.MockPolicy{&mocks.MockIdentityDeserializer{[]byte("Bob"), []byte("msg2")}}},
-			"C": &mocks.MockChannelPolicyManager{&mocks.MockPolicy{&mocks.MockIdentityDeserializer{[]byte("Alice"), []byte("msg3")}}},
+		Managers: map[string]policies.Manager{
+			"A": &mocks.MockChannelPolicyManager{
+				MockPolicy: &mocks.MockPolicy{Deserializer: &mocks.MockIdentityDeserializer{
+					Identity: []byte("Alice"),
+					Msg:      []byte("msg1"),
+				}},
+			},
+			"B": &mocks.MockChannelPolicyManager{
+				MockPolicy: &mocks.MockPolicy{Deserializer: &mocks.MockIdentityDeserializer{
+					Identity: []byte("Bob"),
+					Msg:      []byte("msg2"),
+				}},
+			},
+			"C": &mocks.MockChannelPolicyManager{
+				MockPolicy: &mocks.MockPolicy{Deserializer: &mocks.MockIdentityDeserializer{
+					Identity: []byte("Alice"),
+					Msg:      []byte("msg3"),
+				}},
+			},
 		},
 	}
-	identityDeserializer := &mocks.MockIdentityDeserializer{[]byte("Alice"), []byte("msg1")}
+	identityDeserializer := &mocks.MockIdentityDeserializer{
+		Identity: []byte("Alice"),
+		Msg:      []byte("msg1"),
+	}
 	pc := NewPolicyChecker(
 		policyManagerGetter,
 		identityDeserializer,
@@ -134,13 +172,34 @@ func TestPolicyCheckerInvalidArgs(t *testing.T) {
 
 func TestPolicyChecker(t *testing.T) {
 	policyManagerGetter := &mocks.MockChannelPolicyManagerGetter{
-		map[string]policies.Manager{
-			"A": &mocks.MockChannelPolicyManager{&mocks.MockPolicy{&mocks.MockIdentityDeserializer{[]byte("Alice"), []byte("msg1")}}},
-			"B": &mocks.MockChannelPolicyManager{&mocks.MockPolicy{&mocks.MockIdentityDeserializer{[]byte("Bob"), []byte("msg2")}}},
-			"C": &mocks.MockChannelPolicyManager{&mocks.MockPolicy{&mocks.MockIdentityDeserializer{[]byte("Alice"), []byte("msg3")}}},
+		Managers: map[string]policies.Manager{
+			"A": &mocks.MockChannelPolicyManager{
+				MockPolicy: &mocks.MockPolicy{
+					Deserializer: &mocks.MockIdentityDeserializer{Identity: []byte("Alice"), Msg: []byte("msg1")},
+				},
+			},
+			"B": &mocks.MockChannelPolicyManager{
+				MockPolicy: &mocks.MockPolicy{
+					Deserializer: &mocks.MockIdentityDeserializer{
+						Identity: []byte("Bob"),
+						Msg:      []byte("msg2"),
+					},
+				},
+			},
+			"C": &mocks.MockChannelPolicyManager{
+				MockPolicy: &mocks.MockPolicy{
+					Deserializer: &mocks.MockIdentityDeserializer{
+						Identity: []byte("Alice"),
+						Msg:      []byte("msg3"),
+					},
+				},
+			},
 		},
 	}
-	identityDeserializer := &mocks.MockIdentityDeserializer{[]byte("Alice"), []byte("msg1")}
+	identityDeserializer := &mocks.MockIdentityDeserializer{
+		Identity: []byte("Alice"),
+		Msg:      []byte("msg1"),
+	}
 	pc := NewPolicyChecker(
 		policyManagerGetter,
 		identityDeserializer,

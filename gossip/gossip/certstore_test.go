@@ -7,6 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 package gossip
 
 import (
+	"bytes"
 	"sync"
 	"testing"
 	"time"
@@ -54,6 +55,11 @@ func (s *sentMsg) GetSourceEnvelope() *proto.Envelope {
 	return nil
 }
 
+// Ack returns to the sender an acknowledgement for the message
+func (s *sentMsg) Ack(err error) {
+
+}
+
 func (s *sentMsg) Respond(msg *proto.GossipMessage) {
 	s.Called(msg)
 }
@@ -89,6 +95,7 @@ func TestCertStoreBadSignature(t *testing.T) {
 	}
 	pm, cs, _ := createObjects(badSignature, nil)
 	defer pm.Stop()
+	defer cs.stop()
 	testCertificateUpdate(t, false, cs)
 }
 
@@ -99,6 +106,7 @@ func TestCertStoreMismatchedIdentity(t *testing.T) {
 
 	pm, cs, _ := createObjects(mismatchedIdentity, nil)
 	defer pm.Stop()
+	defer cs.stop()
 	testCertificateUpdate(t, false, cs)
 }
 
@@ -109,17 +117,14 @@ func TestCertStoreShouldSucceed(t *testing.T) {
 
 	pm, cs, _ := createObjects(totallyFineIdentity, nil)
 	defer pm.Stop()
+	defer cs.stop()
 	testCertificateUpdate(t, true, cs)
 }
 
 func TestCertRevocation(t *testing.T) {
-	identityExpCheckInterval := identityExpirationCheckInterval
 	defer func() {
-		identityExpirationCheckInterval = identityExpCheckInterval
 		cs.revokedPkiIDS = map[string]struct{}{}
 	}()
-
-	identityExpirationCheckInterval = time.Second
 
 	totallyFineIdentity := func(nonce uint64) proto.ReceivedMessage {
 		return createUpdateMessage(nonce, createValidUpdateMessage())
@@ -130,6 +135,7 @@ func TestCertRevocation(t *testing.T) {
 	pm, cStore, sender := createObjects(totallyFineIdentity, func(message *proto.SignedGossipMessage) {
 		askedForIdentity <- struct{}{}
 	})
+	defer cStore.stop()
 	defer pm.Stop()
 	testCertificateUpdate(t, true, cStore)
 	// Should have asked for an identity for the first time
@@ -155,7 +161,7 @@ func TestCertRevocation(t *testing.T) {
 					DataDig: &proto.DataDigest{
 						Nonce:   hello.Nonce,
 						MsgType: proto.PullMsgType_IDENTITY_MSG,
-						Digests: []string{"B"},
+						Digests: [][]byte{[]byte("B")},
 					},
 				},
 			}
@@ -172,12 +178,12 @@ func TestCertRevocation(t *testing.T) {
 	select {
 	case <-time.After(time.Second * 5):
 	case <-askedForIdentity:
-		assert.Fail(t, "Shouldn't have asked for an identity, becase we already have it")
+		assert.Fail(t, "Shouldn't have asked for an identity, because we already have it")
 	}
 	assert.Len(t, askedForIdentity, 0)
 	// Revoke the identity
 	cs.revoke(common.PKIidType("B"))
-	cStore.listRevokedPeers(func(id api.PeerIdentityType) bool {
+	cStore.suspectPeers(func(id api.PeerIdentityType) bool {
 		return string(id) == "B"
 	})
 
@@ -214,14 +220,6 @@ func TestCertExpiration(t *testing.T) {
 	// Restore original usageThreshold value
 	defer identity.SetIdentityUsageThreshold(idUsageThreshold)
 
-	// Backup original identityInactivityCheckInterval value
-	inactivityCheckInterval := identityInactivityCheckInterval
-	identityInactivityCheckInterval = time.Second * 1
-	// Restore original identityInactivityCheckInterval value
-	defer func() {
-		identityInactivityCheckInterval = inactivityCheckInterval
-	}()
-
 	g1 := newGossipInstance(4321, 0, 0, 1)
 	defer g1.Stop()
 	time.Sleep(identity.GetIdentityUsageThreshold() * 2)
@@ -235,7 +233,7 @@ func TestCertExpiration(t *testing.T) {
 		m := o.(proto.ReceivedMessage).GetGossipMessage()
 		if m.IsPullMsg() && m.IsDigestMsg() {
 			for _, dig := range m.GetDataDig().Digests {
-				if dig == "localhost:4321" {
+				if bytes.Equal(dig, []byte("localhost:4321")) {
 					identitiesGotViaPull <- struct{}{}
 				}
 			}
@@ -390,7 +388,7 @@ func createDigest(nonce uint64) proto.ReceivedMessage {
 			DataDig: &proto.DataDigest{
 				Nonce:   nonce,
 				MsgType: proto.PullMsgType_IDENTITY_MSG,
-				Digests: []string{"A", "C"},
+				Digests: [][]byte{[]byte("A"), []byte("C")},
 			},
 		},
 	}
@@ -430,7 +428,9 @@ func createObjects(updateFactory func(uint64) proto.ReceivedMessage, msgCons pro
 	selfIdentity := api.PeerIdentityType("SELF")
 	certStore = newCertStore(&pullerMock{
 		Mediator: pullMediator,
-	}, identity.NewIdentityMapper(cs, selfIdentity), selfIdentity, cs)
+	}, identity.NewIdentityMapper(cs, selfIdentity, func(pkiID common.PKIidType, _ api.PeerIdentityType) {
+		pullMediator.Remove(string(pkiID))
+	}, cs), selfIdentity, cs)
 
 	wg := sync.WaitGroup{}
 	wg.Add(1)

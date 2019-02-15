@@ -20,7 +20,6 @@ import (
 	"github.com/hyperledger/fabric/common/ledger"
 	"github.com/hyperledger/fabric/common/ledger/blkstorage"
 	"github.com/hyperledger/fabric/common/ledger/util/leveldbhelper"
-
 	"github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/peer"
 )
@@ -50,12 +49,7 @@ func (store *fsBlockStore) GetBlockchainInfo() (*common.BlockchainInfo, error) {
 
 // RetrieveBlocks returns an iterator that can be used for iterating over a range of blocks
 func (store *fsBlockStore) RetrieveBlocks(startNum uint64) (ledger.ResultsIterator, error) {
-	var itr *blocksItr
-	var err error
-	if itr, err = store.fileMgr.retrieveBlocks(startNum); err != nil {
-		return nil, err
-	}
-	return itr, nil
+	return store.fileMgr.retrieveBlocks(startNum)
 }
 
 // RetrieveBlockByHash returns the block for given block-hash

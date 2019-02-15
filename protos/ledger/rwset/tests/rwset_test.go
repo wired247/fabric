@@ -22,43 +22,41 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/golang/protobuf/proto"
-	"github.com/hyperledger/fabric/common/ledger/testutil"
 	"github.com/hyperledger/fabric/protos/ledger/rwset"
+	"github.com/stretchr/testify/assert"
 )
 
-const (
-	binaryTestFileName = "rwsetV1ProtoBytes"
-)
+const binaryTestFileName = "rwsetV1ProtoBytes"
 
 // TestRWSetV1BackwardCompatible passes if the 'RWSet' messgae declared in the latest version
 // is able to unmarshal the protobytes that are produced by the 'RWSet' proto message declared in
 // v1.0. This is to make sure that any incompatible changes does not go uncaught.
 func TestRWSetV1BackwardCompatible(t *testing.T) {
 	protoBytes, err := ioutil.ReadFile(binaryTestFileName)
-	testutil.AssertNoError(t, err, "")
+	assert.NoError(t, err)
 	rwset1 := &rwset.TxReadWriteSet{}
-	testutil.AssertNoError(t, proto.Unmarshal(protoBytes, rwset1), "")
+	assert.NoError(t, proto.Unmarshal(protoBytes, rwset1))
 	rwset2 := constructSampleRWSet()
 	t.Logf("rwset1=%s, rwset2=%s", spew.Sdump(rwset1), spew.Sdump(rwset2))
-	testutil.AssertEquals(t, rwset1, rwset2)
+	assert.Equal(t, rwset2, rwset1)
 }
 
-// testPrepareBinaryFileSampleRWSetV1 constructs a proto message for kvrwset and marshals its bytes to file 'rwsetV1ProtoBytes'.
+// PrepareBinaryFileSampleRWSetV1 constructs a proto message for kvrwset and marshals its bytes to file 'rwsetV1ProtoBytes'.
 // this code should be run on fabric version 1.0 so as to produce a sample file of proto message declared in V1
 // In order to invoke this function on V1 code, copy this over on to V1 code, make the first letter as 'T', and finally invoke this function
 // using golang test framwork
-func testPrepareBinaryFileSampleRWSetV1(t *testing.T) {
+func PrepareBinaryFileSampleRWSetV1(t *testing.T) {
 	b, err := proto.Marshal(constructSampleRWSet())
-	testutil.AssertNoError(t, err, "")
-	testutil.AssertNoError(t, ioutil.WriteFile(binaryTestFileName, b, 0775), "")
+	assert.NoError(t, err)
+	assert.NoError(t, ioutil.WriteFile(binaryTestFileName, b, 0644))
 }
 
 func constructSampleRWSet() *rwset.TxReadWriteSet {
 	rwset1 := &rwset.TxReadWriteSet{}
 	rwset1.DataModel = rwset.TxReadWriteSet_KV
 	rwset1.NsRwset = []*rwset.NsReadWriteSet{
-		&rwset.NsReadWriteSet{Namespace: "ns-1", Rwset: []byte("ns-1-rwset")},
-		&rwset.NsReadWriteSet{Namespace: "ns-2", Rwset: []byte("ns-2-rwset")},
+		{Namespace: "ns-1", Rwset: []byte("ns-1-rwset")},
+		{Namespace: "ns-2", Rwset: []byte("ns-2-rwset")},
 	}
 	return rwset1
 }

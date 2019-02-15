@@ -68,6 +68,7 @@ directory. Note: you may need to adjust depending on your OS.
 ```
 sudo pip install Sphinx
 sudo pip install sphinx_rtd_theme
+sudo pip install recommonmark==0.4.0
 cd fabric/docs # Be in this directory. Makefile sits there.
 make html
 ```
@@ -81,7 +82,7 @@ In addition, if you'd like, you may also run a local web server with the followi
 
 ```
 sudo apt-get install apache2
-cd source/build/html
+cd build/html
 sudo cp -r * /var/www/html/
 ```
 

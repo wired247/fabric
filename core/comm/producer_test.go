@@ -15,12 +15,8 @@ import (
 	"google.golang.org/grpc"
 )
 
-type connMock struct {
-	*grpc.ClientConn
-	endpoint string
-}
-
 func TestEmptyEndpoints(t *testing.T) {
+	t.Parallel()
 	noopFactory := func(endpoint string) (*grpc.ClientConn, error) {
 		return nil, nil
 	}
@@ -28,6 +24,7 @@ func TestEmptyEndpoints(t *testing.T) {
 }
 
 func TestConnFailures(t *testing.T) {
+	t.Parallel()
 	conn2Endpoint := make(map[string]string)
 	shouldConnFail := map[string]bool{
 		"a": true,
@@ -75,6 +72,7 @@ func TestConnFailures(t *testing.T) {
 }
 
 func TestUpdateEndpoints(t *testing.T) {
+	t.Parallel()
 	conn2Endpoint := make(map[string]string)
 	connFactory := func(endpoint string) (*grpc.ClientConn, error) {
 		conn := &grpc.ClientConn{}
@@ -121,20 +119,15 @@ func TestDisableEndpoint(t *testing.T) {
 	// Now disable endpoint for 100 milliseconds
 	producer.DisableEndpoint("a")
 	_, _, err = producer.NewConnection()
-	assert.Error(t, err, "Could not connect")
-	// Wait until disable expire and try to connect again
-	time.Sleep(time.Millisecond * 200)
-	conn, a, err = producer.NewConnection()
+	// Make sure if only 1 endpoint remains, we don't black-list it
 	assert.NoError(t, err)
-	assert.Equal(t, "a", conn2Endpoint[fmt.Sprintf("%p", conn)])
-	assert.Equal(t, "a", a)
+	// Update endpoints - add endpoint 'b'
+	producer.UpdateEndpoints([]string{"a", "b"})
 	// Disable again
 	producer.DisableEndpoint("a")
-	// Update endpoints
-	producer.UpdateEndpoints([]string{"a", "b"})
-
 	conn, a, err = producer.NewConnection()
 	assert.NoError(t, err)
+	// Ensure that only b is returned because 'a' is disabled
 	assert.Equal(t, "b", conn2Endpoint[fmt.Sprintf("%p", conn)])
 	assert.Equal(t, "b", a)
 

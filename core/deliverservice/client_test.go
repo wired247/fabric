@@ -7,6 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 package deliverclient
 
 import (
+	"context"
 	"crypto/sha256"
 	"errors"
 	"math"
@@ -22,25 +23,24 @@ import (
 	"github.com/hyperledger/fabric/protos/orderer"
 	"github.com/hyperledger/fabric/protos/utils"
 	"github.com/stretchr/testify/assert"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 )
 
-var connNumber = 0
+var (
+	connWG sync.WaitGroup
+)
 
 func newConnection() *grpc.ClientConn {
-	connNumber++
 	// The balancer is in order to check connection leaks.
 	// When grpc.ClientConn.Close() is called, it calls the balancer's Close()
-	// method which decrements the connNumber
 	cc, _ := grpc.Dial("", grpc.WithInsecure(), grpc.WithBalancer(&balancer{}))
 	return cc
 }
 
-type balancer struct {
-}
+type balancer struct{}
 
 func (*balancer) Start(target string, config grpc.BalancerConfig) error {
+	connWG.Add(1)
 	return nil
 }
 
@@ -57,7 +57,7 @@ func (*balancer) Notify() <-chan []grpc.Address {
 }
 
 func (*balancer) Close() error {
-	connNumber--
+	connWG.Done()
 	return nil
 }
 
@@ -143,6 +143,10 @@ func (cp *connProducer) UpdateEndpoints(endpoints []string) {
 	panic("Not implemented")
 }
 
+func (cp *connProducer) GetEndpoints() []string {
+	panic("Not implemented")
+}
+
 func (cp *connProducer) DisableEndpoint(endpoint string) {
 	panic("Not implemented")
 }
@@ -150,7 +154,7 @@ func (cp *connProducer) DisableEndpoint(endpoint string) {
 func TestOrderingServiceConnFailure(t *testing.T) {
 	testOrderingServiceConnFailure(t, blockDelivererConsumerWithRecv)
 	testOrderingServiceConnFailure(t, blockDelivererConsumerWithSend)
-	assert.Equal(t, 0, connNumber)
+	connWG.Wait()
 }
 
 func testOrderingServiceConnFailure(t *testing.T, bdc blocksDelivererConsumer) {
@@ -187,7 +191,7 @@ func testOrderingServiceConnFailure(t *testing.T, bdc blocksDelivererConsumer) {
 func TestOrderingServiceStreamFailure(t *testing.T) {
 	testOrderingServiceStreamFailure(t, blockDelivererConsumerWithRecv)
 	testOrderingServiceStreamFailure(t, blockDelivererConsumerWithSend)
-	assert.Equal(t, 0, connNumber)
+	connWG.Wait()
 }
 
 func testOrderingServiceStreamFailure(t *testing.T, bdc blocksDelivererConsumer) {
@@ -223,7 +227,7 @@ func testOrderingServiceStreamFailure(t *testing.T, bdc blocksDelivererConsumer)
 func TestOrderingServiceSetupFailure(t *testing.T) {
 	testOrderingServiceSetupFailure(t, blockDelivererConsumerWithRecv)
 	testOrderingServiceSetupFailure(t, blockDelivererConsumerWithSend)
-	assert.Equal(t, 0, connNumber)
+	connWG.Wait()
 }
 
 func testOrderingServiceSetupFailure(t *testing.T, bdc blocksDelivererConsumer) {
@@ -257,7 +261,7 @@ func testOrderingServiceSetupFailure(t *testing.T, bdc blocksDelivererConsumer) 
 func TestOrderingServiceFirstOperationFailure(t *testing.T) {
 	testOrderingServiceFirstOperationFailure(t, blockDelivererConsumerWithRecv)
 	testOrderingServiceFirstOperationFailure(t, blockDelivererConsumerWithSend)
-	assert.Equal(t, 0, connNumber)
+	connWG.Wait()
 }
 
 func testOrderingServiceFirstOperationFailure(t *testing.T, bdc blocksDelivererConsumer) {
@@ -294,7 +298,7 @@ func testOrderingServiceFirstOperationFailure(t *testing.T, bdc blocksDelivererC
 func TestOrderingServiceCrashAndRecover(t *testing.T) {
 	testOrderingServiceCrashAndRecover(t, blockDelivererConsumerWithRecv)
 	testOrderingServiceCrashAndRecover(t, blockDelivererConsumerWithSend)
-	assert.Equal(t, 0, connNumber)
+	connWG.Wait()
 }
 
 func testOrderingServiceCrashAndRecover(t *testing.T, bdc blocksDelivererConsumer) {
@@ -335,7 +339,7 @@ func testOrderingServiceCrashAndRecover(t *testing.T, bdc blocksDelivererConsume
 func TestOrderingServicePermanentCrash(t *testing.T) {
 	testOrderingServicePermanentCrash(t, blockDelivererConsumerWithRecv)
 	testOrderingServicePermanentCrash(t, blockDelivererConsumerWithSend)
-	assert.Equal(t, 0, connNumber)
+	connWG.Wait()
 }
 
 func testOrderingServicePermanentCrash(t *testing.T, bdc blocksDelivererConsumer) {
@@ -373,7 +377,7 @@ func testOrderingServicePermanentCrash(t *testing.T, bdc blocksDelivererConsumer
 func TestLimitedConnAttempts(t *testing.T) {
 	testLimitedConnAttempts(t, blockDelivererConsumerWithRecv)
 	testLimitedConnAttempts(t, blockDelivererConsumerWithSend)
-	assert.Equal(t, 0, connNumber)
+	connWG.Wait()
 }
 
 func testLimitedConnAttempts(t *testing.T, bdc blocksDelivererConsumer) {
@@ -401,12 +405,12 @@ func testLimitedConnAttempts(t *testing.T, bdc blocksDelivererConsumer) {
 
 func TestLimitedTotalConnTimeRcv(t *testing.T) {
 	testLimitedTotalConnTime(t, blockDelivererConsumerWithRecv)
-	assert.Equal(t, 0, connNumber)
+	connWG.Wait()
 }
 
 func TestLimitedTotalConnTimeSnd(t *testing.T) {
 	testLimitedTotalConnTime(t, blockDelivererConsumerWithSend)
-	assert.Equal(t, 0, connNumber)
+	connWG.Wait()
 }
 
 func testLimitedTotalConnTime(t *testing.T, bdc blocksDelivererConsumer) {
@@ -424,20 +428,20 @@ func testLimitedTotalConnTime(t *testing.T, bdc blocksDelivererConsumer) {
 		return nil
 	}
 	backoffStrategy := func(attemptNum int, elapsedTime time.Duration) (time.Duration, bool) {
-		return 0, elapsedTime.Nanoseconds() < time.Second.Nanoseconds()
+		return time.Millisecond * 500, elapsedTime.Nanoseconds() < time.Second.Nanoseconds()
 	}
 	bc := NewBroadcastClient(cp, clFactory, setup, backoffStrategy)
 	defer bc.Close()
 	err := bdc(bc)
 	assert.Error(t, err)
-	assert.Equal(t, 1, cp.connAttempts)
+	assert.Equal(t, 3, cp.connAttempts)
 	assert.Equal(t, 0, setupInvoked)
 }
 
 func TestGreenPath(t *testing.T) {
 	testGreenPath(t, blockDelivererConsumerWithRecv)
 	testGreenPath(t, blockDelivererConsumerWithSend)
-	assert.Equal(t, 0, connNumber)
+	connWG.Wait()
 }
 
 func testGreenPath(t *testing.T, bdc blocksDelivererConsumer) {
@@ -497,13 +501,13 @@ func TestCloseWhileRecv(t *testing.T) {
 	assert.Equal(t, int32(1), atomic.LoadInt32(&flag), "Recv returned before bc.Close() was called")
 	assert.Nil(t, resp)
 	assert.Error(t, err)
-	assert.Contains(t, "Client is closing", err.Error())
+	assert.Contains(t, "client is closing", err.Error())
 }
 
 func TestCloseWhileSleep(t *testing.T) {
 	testCloseWhileSleep(t, blockDelivererConsumerWithRecv)
 	testCloseWhileSleep(t, blockDelivererConsumerWithSend)
-	assert.Equal(t, 0, connNumber)
+	connWG.Wait()
 }
 
 func testCloseWhileSleep(t *testing.T, bdc blocksDelivererConsumer) {
@@ -671,21 +675,21 @@ func TestDisconnect(t *testing.T) {
 
 func TestDisconnectAndDisableEndpoint(t *testing.T) {
 	// Scenario:
-	// Start one ordering service and one client
-	// Connect client to ordering service endpoint
-	// Check connection to ordering service
-	// Disconnect and disable endpoint
-	// Check that ordering service don't have connection to the client
-	// Try to reconnect to endpoint (orderer) and check that
-	// ordering service still don't have connection to the client
-	// Wait until endpoint disable expired and reconnect again
-	// Check that we have connection between orderer and client
+	// 1)  Start two ordering service nodes and one client
+	// 2) Have the client connect to some ordering service node
+	// 3) Disconnect and disable the endpoint of the current connection,
+	//    and ensure the client connects to the other node.
+	// 4) Black-list the second connection and ensure it still connects
+	//    to the ordering service node because it's the last one remaining.
 
 	defer ensureNoGoroutineLeak(t)()
-	os := mocks.NewOrderer(5613, t)
-	os.SetNextExpectedSeek(5)
+	os1 := mocks.NewOrderer(5613, t)
+	os1.SetNextExpectedSeek(5)
+	os2 := mocks.NewOrderer(5614, t)
+	os2.SetNextExpectedSeek(5)
 
-	defer os.Shutdown()
+	defer os1.Shutdown()
+	defer os2.Shutdown()
 
 	orgEndpointDisableInterval := comm.EndpointDisableInterval
 	comm.EndpointDisableInterval = time.Millisecond * 1500
@@ -694,7 +698,7 @@ func TestDisconnectAndDisableEndpoint(t *testing.T) {
 	connFact := func(endpoint string) (*grpc.ClientConn, error) {
 		return grpc.Dial(endpoint, grpc.WithInsecure(), grpc.WithBlock())
 	}
-	prod := comm.NewConnectionProducer(connFact, []string{"localhost:5613"})
+	prod := comm.NewConnectionProducer(connFact, []string{"localhost:5613", "localhost:5614"})
 	clFact := func(cc *grpc.ClientConn) orderer.AtomicBroadcastClient {
 		return orderer.NewAtomicBroadcastClient(cc)
 	}
@@ -707,6 +711,7 @@ func TestDisconnectAndDisableEndpoint(t *testing.T) {
 	}
 
 	cl := NewBroadcastClient(prod, clFact, onConnect, retryPol)
+	defer cl.Close()
 
 	// First connect to orderer
 	go func() {
@@ -714,38 +719,29 @@ func TestDisconnectAndDisableEndpoint(t *testing.T) {
 	}()
 
 	assert.True(t, waitForWithTimeout(time.Millisecond*100, func() bool {
-		return os.ConnCount() == 1
+		return os1.ConnCount() == 1 || os2.ConnCount() == 1
 	}), "Didn't get connection to orderer")
+
+	connectedToOS1 := os1.ConnCount() == 1
 
 	// Disconnect and disable endpoint
 	cl.Disconnect(true)
 
+	// Ensure we reconnected to the other node
 	assert.True(t, waitForWithTimeout(time.Millisecond*100, func() bool {
-		return os.ConnCount() == 0
-	}), "Didn't disconnect from orderer")
+		if connectedToOS1 {
+			return os1.ConnCount() == 0 && os2.ConnCount() == 1
+		}
+		return os2.ConnCount() == 0 && os1.ConnCount() == 1
+	}), "Didn't disconnect from orderer, or reconnected to a black-listed node")
 
-	// Try to reconnect while endpoint still disabled
-	go func() {
-		assert.False(t, waitForWithTimeout(time.Millisecond*100, func() bool {
-			return os.ConnCount() == 1
-		}), "Recreated connection to orderer, although shouldn't")
-	}()
+	// Disconnect from the node we are currently connected to, and attempt to black-list it
+	cl.Disconnect(true)
 
-	_, err := cl.Recv()
-	assert.Error(t, err, "Connection shouldn't have been established because all endpoints have been disabled")
-
-	//Wait until endpoint disable expires and reconnect again
-	time.Sleep(time.Millisecond * 1500)
-
-	go func() {
-		cl.Recv()
-	}()
-
+	// Ensure we are still connected to some orderer, even though both endpoints are now black-listed
 	assert.True(t, waitForWithTimeout(time.Millisecond*100, func() bool {
-		return os.ConnCount() == 1
-	}), "Didn't got connection to orderer after endpoint disable expired")
-
-	cl.Close()
+		return os1.ConnCount() == 1 || os2.ConnCount() == 1
+	}), "Didn't got connection to orderer")
 }
 
 func waitForWithTimeout(timeout time.Duration, f func() bool) bool {

@@ -6,26 +6,29 @@
 # -------------------------------------------------------------
 # This makefile defines the following targets
 #
-#   - all (default) - builds all targets and runs all tests/checks
-#   - checks - runs all tests/checks
+#   - all (default) - builds all targets and runs all non-integration tests/checks
+#   - checks - runs all non-integration tests/checks
 #   - desk-check - runs linters and verify to test changed packages
 #   - configtxgen - builds a native configtxgen binary
 #   - configtxlator - builds a native configtxlator binary
 #   - cryptogen  -  builds a native cryptogen binary
+#   - idemixgen  -  builds a native idemixgen binary
 #   - peer - builds a native fabric peer binary
 #   - orderer - builds a native fabric orderer binary
 #   - release - builds release packages for the host platform
 #   - release-all - builds release packages for all target platforms
+#   - publish-images - publishes release docker images to nexus3 or docker hub.
 #   - unit-test - runs the go-test based unit tests
 #   - verify - runs unit tests for only the changed package tree
+#   - profile - runs unit tests for all packages in coverprofile mode (slow)
 #   - test-cmd - generates a "go test" string suitable for manual customization
-#   - behave - runs the behave test
-#   - behave-deps - ensures pre-requisites are available for running behave manually
 #   - gotools - installs go tools like golint
 #   - linter - runs all code checks
+#   - check-deps - check for vendored dependencies that are no longer used
 #   - license - checks go source files for Apache license header
 #   - native - ensures all native binaries are available
 #   - docker[-clean] - ensures all docker images are available[/cleaned]
+#   - docker-list - generates a list of docker images that 'make docker' produces
 #   - peer-docker[-clean] - ensures the peer container is available[/cleaned]
 #   - orderer-docker[-clean] - ensures the orderer container is available[/cleaned]
 #   - tools-docker[-clean] - ensures the tools container is available[/cleaned]
@@ -34,73 +37,106 @@
 #   - clean-all - superset of 'clean' that also removes persistent state
 #   - dist-clean - clean release packages for all target platforms
 #   - unit-test-clean - cleans unit test state (particularly from docker)
+#   - basic-checks - performs basic checks like license, spelling, trailing spaces and linter
+#   - enable_ci_only_tests - triggers unit-tests in downstream jobs. Applicable only for CI not to
+#     use in the local machine.
+#   - docker-thirdparty - pulls thirdparty images (kafka,zookeeper,couchdb)
+#   - docker-tag-latest - re-tags the images made by 'make docker' with the :latest tag
+#   - docker-tag-stable - re-tags the images made by 'make docker' with the :stable tag
+#   - help-docs - generate the command reference docs
 
-PROJECT_NAME   = hyperledger/fabric
-BASE_VERSION = 1.1.0
-PREV_VERSION = 1.0.0
-IS_RELEASE = false
+ALPINE_VER ?= 3.8
+BASE_VERSION = 2.0.0
+PREV_VERSION = 1.4.0
+CHAINTOOL_RELEASE ?= 1.1.3
+BASEIMAGE_RELEASE = 0.4.14
+JAVA_VER ?= 8
+NODE_VER ?= 8
 
-ifneq ($(IS_RELEASE),true)
-EXTRA_VERSION ?= snapshot-$(shell git rev-parse --short HEAD)
-PROJECT_VERSION=$(BASE_VERSION)-$(EXTRA_VERSION)
+# Allow to build as a submodule setting the main project to
+# the PROJECT_NAME env variable, for example,
+# export PROJECT_NAME=hyperledger/fabric-test
+ifeq ($(PROJECT_NAME),true)
+PROJECT_NAME = $(PROJECT_NAME)/fabric
 else
-PROJECT_VERSION=$(BASE_VERSION)
+PROJECT_NAME = hyperledger/fabric
 endif
+
+BUILD_DIR ?= .build
+NEXUS_REPO = nexus3.hyperledger.org:10001/hyperledger
+
+EXTRA_VERSION ?= $(shell git rev-parse --short HEAD)
+PROJECT_VERSION=$(BASE_VERSION)-snapshot-$(EXTRA_VERSION)
 
 PKGNAME = github.com/$(PROJECT_NAME)
 CGO_FLAGS = CGO_CFLAGS=" "
-ARCH=$(shell uname -m)
+ARCH=$(shell go env GOARCH)
 MARCH=$(shell go env GOOS)-$(shell go env GOARCH)
-CHAINTOOL_RELEASE=1.0.0
-BASEIMAGE_RELEASE=$(shell cat ./.baseimage-release)
 
 # defined in common/metadata/metadata.go
-METADATA_VAR = Version=$(PROJECT_VERSION)
+METADATA_VAR = Version=$(BASE_VERSION)
+METADATA_VAR += CommitSHA=$(EXTRA_VERSION)
 METADATA_VAR += BaseVersion=$(BASEIMAGE_RELEASE)
 METADATA_VAR += BaseDockerLabel=$(BASE_DOCKER_LABEL)
 METADATA_VAR += DockerNamespace=$(DOCKER_NS)
 METADATA_VAR += BaseDockerNamespace=$(BASE_DOCKER_NS)
 
+GO_VER = $(shell grep "GO_VER" ci.properties |cut -d'=' -f2-)
 GO_LDFLAGS = $(patsubst %,-X $(PKGNAME)/common/metadata.%,$(METADATA_VAR))
 
 GO_TAGS ?=
 
 CHAINTOOL_URL ?= https://nexus.hyperledger.org/content/repositories/releases/org/hyperledger/fabric/hyperledger-fabric/chaintool-$(CHAINTOOL_RELEASE)/hyperledger-fabric-chaintool-$(CHAINTOOL_RELEASE).jar
 
-export GO_LDFLAGS
+export GO_LDFLAGS GO_TAGS
 
-EXECUTABLES = go docker git curl
+EXECUTABLES ?= go docker git curl
 K := $(foreach exec,$(EXECUTABLES),\
 	$(if $(shell which $(exec)),some string,$(error "No $(exec) in PATH: Check dependencies")))
 
 GOSHIM_DEPS = $(shell ./scripts/goListFiles.sh $(PKGNAME)/core/chaincode/shim)
-JAVASHIM_DEPS =  $(shell git ls-files core/chaincode/shim/java)
-PROTOS = $(shell git ls-files *.proto | grep -v vendor)
+PROTOS = $(shell git ls-files *.proto | grep -Ev 'vendor/|testdata/')
 # No sense rebuilding when non production code is changed
 PROJECT_FILES = $(shell git ls-files  | grep -v ^test | grep -v ^unit-test | \
-	grep -v ^bddtests | grep -v ^docs | grep -v _test.go$ | grep -v .md$ | \
 	grep -v ^.git | grep -v ^examples | grep -v ^devenv | grep -v .png$ | \
-	grep -v ^LICENSE )
+	grep -v ^LICENSE | grep -v ^vendor )
 RELEASE_TEMPLATES = $(shell git ls-files | grep "release/templates")
-IMAGES = peer orderer ccenv javaenv buildenv testenv zookeeper kafka couchdb tools
-RELEASE_PLATFORMS = windows-amd64 darwin-amd64 linux-amd64 linux-ppc64le linux-s390x
-RELEASE_PKGS = configtxgen cryptogen configtxlator peer orderer
+IMAGES = peer orderer baseos ccenv buildenv tools
+RELEASE_PLATFORMS = windows-amd64 darwin-amd64 linux-amd64 linux-s390x linux-ppc64le
+RELEASE_PKGS = configtxgen cryptogen idemixgen discover configtxlator peer orderer
+RELEASE_IMAGES = peer orderer tools ccenv baseos
 
 pkgmap.cryptogen      := $(PKGNAME)/common/tools/cryptogen
+pkgmap.idemixgen      := $(PKGNAME)/common/tools/idemixgen
 pkgmap.configtxgen    := $(PKGNAME)/common/tools/configtxgen
 pkgmap.configtxlator  := $(PKGNAME)/common/tools/configtxlator
 pkgmap.peer           := $(PKGNAME)/peer
 pkgmap.orderer        := $(PKGNAME)/orderer
 pkgmap.block-listener := $(PKGNAME)/examples/events/block-listener
-pkgmap.cryptogen      := $(PKGNAME)/common/tools/cryptogen
+pkgmap.discover       := $(PKGNAME)/cmd/discover
 
 include docker-env.mk
 
 all: native docker checks
 
-checks: license spelling linter unit-test behave
+checks: basic-checks unit-test integration-test
 
-desk-check: license spelling linter verify behave
+basic-checks: license spelling trailing-spaces linter check-metrics-doc
+
+desk-check: checks verify
+
+help-docs: native
+	@scripts/generateHelpDocs.sh
+
+# Pull thirdparty docker images based on the latest baseimage release version
+.PHONY: docker-thirdparty
+docker-thirdparty:
+	docker pull $(BASE_DOCKER_NS)/fabric-couchdb:$(BASE_DOCKER_TAG)
+	docker tag $(BASE_DOCKER_NS)/fabric-couchdb:$(BASE_DOCKER_TAG) $(DOCKER_NS)/fabric-couchdb
+	docker pull $(BASE_DOCKER_NS)/fabric-zookeeper:$(BASE_DOCKER_TAG)
+	docker tag $(BASE_DOCKER_NS)/fabric-zookeeper:$(BASE_DOCKER_TAG) $(DOCKER_NS)/fabric-zookeeper
+	docker pull $(BASE_DOCKER_NS)/fabric-kafka:$(BASE_DOCKER_TAG)
+	docker tag $(BASE_DOCKER_NS)/fabric-kafka:$(BASE_DOCKER_TAG) $(DOCKER_NS)/fabric-kafka
 
 .PHONY: spelling
 spelling:
@@ -110,194 +146,131 @@ spelling:
 license:
 	@scripts/check_license.sh
 
+.PHONY: trailing-spaces
+trailing-spaces:
+	@scripts/check_trailingspaces.sh
+
+include gotools.mk
+
 .PHONY: gotools
-gotools:
-	mkdir -p build/bin
-	cd gotools && $(MAKE) install BINDIR=$(GOPATH)/bin
+gotools: gotools-install
 
-.PHONY: gotools-clean
-gotools-clean:
-	cd gotools && $(MAKE) clean
+tools-docker: $(BUILD_DIR)/images/tools/$(DUMMY)
 
-# This is a legacy target left to satisfy existing CI scripts
-membersrvc-image:
-	@echo "membersrvc has been removed from this build"
+buildenv: $(BUILD_DIR)/images/buildenv/$(DUMMY)
+
+baseos: $(BUILD_DIR)/images/baseos/$(DUMMY)
+
+ccenv: $(BUILD_DIR)/images/ccenv/$(DUMMY)
 
 .PHONY: peer
-peer: build/bin/peer
-peer-docker: build/image/peer/$(DUMMY)
+peer: $(BUILD_DIR)/bin/peer
+peer-docker: $(BUILD_DIR)/images/peer/$(DUMMY)
 
 .PHONY: orderer
-orderer: build/bin/orderer
-orderer-docker: build/image/orderer/$(DUMMY)
+orderer: $(BUILD_DIR)/bin/orderer
+orderer-docker: $(BUILD_DIR)/images/orderer/$(DUMMY)
 
 .PHONY: configtxgen
-configtxgen: GO_TAGS+= nopkcs11
-configtxgen: GO_LDFLAGS=-X $(pkgmap.$(@F))/metadata.Version=$(PROJECT_VERSION)
-configtxgen: build/bin/configtxgen
+configtxgen: GO_LDFLAGS=-X $(pkgmap.$(@F))/metadata.CommitSHA=$(EXTRA_VERSION)
+configtxgen: $(BUILD_DIR)/bin/configtxgen
 
-configtxlator: GO_LDFLAGS=-X $(pkgmap.$(@F))/metadata.Version=$(PROJECT_VERSION)
-configtxlator: build/bin/configtxlator
+configtxlator: GO_LDFLAGS=-X $(pkgmap.$(@F))/metadata.CommitSHA=$(EXTRA_VERSION)
+configtxlator: $(BUILD_DIR)/bin/configtxlator
 
-cryptogen: GO_LDFLAGS=-X $(pkgmap.$(@F))/metadata.Version=$(PROJECT_VERSION)
-cryptogen: build/bin/cryptogen
+cryptogen: GO_LDFLAGS=-X $(pkgmap.$(@F))/metadata.CommitSHA=$(EXTRA_VERSION)
+cryptogen: $(BUILD_DIR)/bin/cryptogen
 
-tools-docker: build/image/tools/$(DUMMY)
+idemixgen: GO_LDFLAGS=-X $(pkgmap.$(@F))/metadata.CommitSHA=$(EXTRA_VERSION)
+idemixgen: $(BUILD_DIR)/bin/idemixgen
 
-javaenv: build/image/javaenv/$(DUMMY)
+discover: GO_LDFLAGS=-X $(pkgmap.$(@F))/metadata.Version=$(PROJECT_VERSION)
+discover: $(BUILD_DIR)/bin/discover
 
-buildenv: build/image/buildenv/$(DUMMY)
+.PHONY: integration-test
+integration-test: gotool.ginkgo ccenv baseos docker-thirdparty
+	./scripts/run-integration-tests.sh
 
-build/image/testenv/$(DUMMY): build/image/buildenv/$(DUMMY)
-testenv: build/image/testenv/$(DUMMY)
-
-couchdb: build/image/couchdb/$(DUMMY)
-
-kafka: build/image/kafka/$(DUMMY)
-
-zookeeper: build/image/zookeeper/$(DUMMY)
-
-unit-test: unit-test-clean peer-docker testenv couchdb
-	cd unit-test && docker-compose up --abort-on-container-exit --force-recreate && docker-compose down
+unit-test: unit-test-clean peer-docker docker-thirdparty ccenv baseos
+	./scripts/run-unit-tests.sh
 
 unit-tests: unit-test
 
-verify: unit-test-clean peer-docker testenv couchdb
-	cd unit-test && JOB_TYPE=VERIFY docker-compose up --abort-on-container-exit --force-recreate && docker-compose down
+enable_ci_only_tests: unit-test
+
+verify: export JOB_TYPE=VERIFY
+verify: unit-test
+
+profile: export JOB_TYPE=PROFILE
+profile: unit-test
 
 # Generates a string to the terminal suitable for manual augmentation / re-issue, useful for running tests by hand
 test-cmd:
-	@echo "go test -ldflags \"$(GO_LDFLAGS)\""
+	@echo "go test -tags \"$(GO_TAGS)\""
 
-docker: $(patsubst %,build/image/%/$(DUMMY), $(IMAGES))
-native: peer orderer configtxgen cryptogen configtxlator
+docker: $(patsubst %,$(BUILD_DIR)/images/%/$(DUMMY), $(IMAGES))
 
-behave-deps: docker peer build/bin/block-listener configtxgen cryptogen
-behave: behave-deps
-	@echo "Running behave tests"
-	@cd bddtests; behave $(BEHAVE_OPTS)
+native: peer orderer configtxgen cryptogen idemixgen configtxlator discover
 
-behave-peer-chaincode: build/bin/peer peer-docker orderer-docker
-	@cd peer/chaincode && behave
-
-linter: buildenv
+linter: check-deps buildenv
 	@echo "LINT: Running code checks.."
 	@$(DRUN) $(DOCKER_NS)/fabric-buildenv:$(DOCKER_TAG) ./scripts/golinter.sh
 
-%/chaintool: Makefile
-	@echo "Installing chaintool"
-	@mkdir -p $(@D)
-	curl -fL $(CHAINTOOL_URL) > $@
-	chmod +x $@
+check-deps: buildenv
+	@echo "DEP: Checking for dependency issues.."
+	@$(DRUN) $(DOCKER_NS)/fabric-buildenv:$(DOCKER_TAG) ./scripts/check_deps.sh
 
-# We (re)build a package within a docker context but persist the $GOPATH/pkg
-# directory so that subsequent builds are faster
-build/docker/bin/%: $(PROJECT_FILES)
-	$(eval TARGET = ${patsubst build/docker/bin/%,%,${@}})
-	@echo "Building $@"
-	@mkdir -p build/docker/bin build/docker/$(TARGET)/pkg
-	@$(DRUN) \
-		-v $(abspath build/docker/bin):/opt/gopath/bin \
-		-v $(abspath build/docker/$(TARGET)/pkg):/opt/gopath/pkg \
-		$(BASE_DOCKER_NS)/fabric-baseimage:$(BASE_DOCKER_TAG) \
-		go install -ldflags "$(DOCKER_GO_LDFLAGS)" $(pkgmap.$(@F))
-	@touch $@
+check-metrics-doc: buildenv
+	@echo "METRICS: Checking for outdated reference documentation.."
+	@$(DRUN) $(DOCKER_NS)/fabric-buildenv:$(DOCKER_TAG) ./scripts/metrics_doc.sh check
 
-build/bin:
-	mkdir -p $@
+generate-metrics-doc: buildenv
+	@echo "Generating metrics reference documentation..."
+	@$(DRUN) $(DOCKER_NS)/fabric-buildenv:$(DOCKER_TAG) ./scripts/metrics_doc.sh generate
 
 changelog:
 	./scripts/changelog.sh v$(PREV_VERSION) v$(BASE_VERSION)
 
-build/docker/gotools/bin/protoc-gen-go: build/docker/gotools
+$(BUILD_DIR)/bin:
+	@mkdir -p $@
 
-build/docker/gotools: gotools/Makefile
-	@mkdir -p $@/bin $@/obj
-	@$(DRUN) \
-		-v $(abspath $@):/opt/gotools \
-		-w /opt/gopath/src/$(PKGNAME)/gotools \
-		$(BASE_DOCKER_NS)/fabric-baseimage:$(BASE_DOCKER_TAG) \
-		make install BINDIR=/opt/gotools/bin OBJDIR=/opt/gotools/obj
-
-# Both peer and peer-docker depend on ccenv and javaenv (all docker env images it supports).
-build/bin/peer: build/image/ccenv/$(DUMMY) build/image/javaenv/$(DUMMY)
-build/image/peer/$(DUMMY): build/image/ccenv/$(DUMMY) build/image/javaenv/$(DUMMY)
-
-build/bin/%: $(PROJECT_FILES)
+$(BUILD_DIR)/bin/%: $(PROJECT_FILES)
 	@mkdir -p $(@D)
 	@echo "$@"
 	$(CGO_FLAGS) GOBIN=$(abspath $(@D)) go install -tags "$(GO_TAGS)" -ldflags "$(GO_LDFLAGS)" $(pkgmap.$(@F))
 	@echo "Binary available as $@"
 	@touch $@
 
-# payload definitions'
-build/image/ccenv/payload:      build/docker/gotools/bin/protoc-gen-go \
-				build/bin/chaintool \
-				build/goshim.tar.bz2
-build/image/javaenv/payload:    build/javashim.tar.bz2 \
-				build/protos.tar.bz2 \
-				settings.gradle
-build/image/peer/payload:       build/docker/bin/peer \
-				build/sampleconfig.tar.bz2
-build/image/orderer/payload:    build/docker/bin/orderer \
-				build/sampleconfig.tar.bz2
-build/image/buildenv/payload:   build/gotools.tar.bz2 \
-				build/docker/gotools/bin/protoc-gen-go
-build/image/testenv/payload:    build/docker/bin/orderer \
-				build/docker/bin/peer \
-				build/sampleconfig.tar.bz2 \
-				images/testenv/install-softhsm2.sh
-build/image/zookeeper/payload:  images/zookeeper/docker-entrypoint.sh
-build/image/kafka/payload:      images/kafka/docker-entrypoint.sh \
-				images/kafka/kafka-run-class.sh
-build/image/couchdb/payload:	images/couchdb/docker-entrypoint.sh \
-				images/couchdb/local.ini \
-				images/couchdb/vm.args
-build/image/tools/payload:      build/docker/bin/cryptogen \
-	                        build/docker/bin/configtxgen \
-	                        build/docker/bin/configtxlator \
-				build/docker/bin/peer \
-				build/sampleconfig.tar.bz2
-
-build/image/%/payload:
-	mkdir -p $@
-	cp $^ $@
-
-.PRECIOUS: build/image/%/Dockerfile
-
-build/image/%/Dockerfile: images/%/Dockerfile.in
-	@cat $< \
-		| sed -e 's/_BASE_NS_/$(BASE_DOCKER_NS)/g' \
-		| sed -e 's/_NS_/$(DOCKER_NS)/g' \
-		| sed -e 's/_BASE_TAG_/$(BASE_DOCKER_TAG)/g' \
-		| sed -e 's/_TAG_/$(DOCKER_TAG)/g' \
-		> $@
-	@echo LABEL $(BASE_DOCKER_LABEL).version=$(PROJECT_VERSION) \\>>$@
-	@echo "     " $(BASE_DOCKER_LABEL).base.version=$(BASEIMAGE_RELEASE)>>$@
-
-build/image/%/$(DUMMY): Makefile build/image/%/payload build/image/%/Dockerfile
-	$(eval TARGET = ${patsubst build/image/%/$(DUMMY),%,${@}})
-	@echo "Building docker $(TARGET)-image"
-	$(DBUILD) -t $(DOCKER_NS)/fabric-$(TARGET) $(@D)
-	docker tag $(DOCKER_NS)/fabric-$(TARGET) $(DOCKER_NS)/fabric-$(TARGET):$(DOCKER_TAG)
+$(BUILD_DIR)/images/baseos/$(DUMMY):
+	@mkdir -p $(@D)
+	$(eval TARGET = ${patsubst $(BUILD_DIR)/images/%/$(DUMMY),%,${@}})
+	@echo "Docker:  building $(TARGET) image"
+	$(DBUILD) -f images/peer/Dockerfile \
+		--target base \
+		--build-arg GO_VER=${GO_VER} --build-arg ALPINE_VER=${ALPINE_VER} \
+		-t $(BASE_DOCKER_NS)/fabric-$(TARGET) images/peer
+	docker tag $(BASE_DOCKER_NS)/fabric-$(TARGET) \
+		$(DOCKER_NS)/fabric-$(TARGET):$(BASE_VERSION)
+	docker tag $(BASE_DOCKER_NS)/fabric-$(TARGET) \
+		$(DOCKER_NS)/fabric-$(TARGET):$(DOCKER_TAG)
 	@touch $@
 
-build/gotools.tar.bz2: build/docker/gotools
-	(cd $</bin && tar -jc *) > $@
+$(BUILD_DIR)/images/ccenv/$(DUMMY): BUILD_ARGS=--build-arg CHAINTOOL_RELEASE=${CHAINTOOL_RELEASE} \
+	--build-arg JAVA_VER=${JAVA_VER} --build-arg NODE_VER=${NODE_VER}
 
-build/goshim.tar.bz2: $(GOSHIM_DEPS)
-	@echo "Creating $@"
-	@tar -jhc -C $(GOPATH)/src $(patsubst $(GOPATH)/src/%,%,$(GOSHIM_DEPS)) > $@
-
-build/sampleconfig.tar.bz2: $(shell find sampleconfig -type f)
-	(cd sampleconfig && tar -jc *) > $@
-
-build/javashim.tar.bz2: $(JAVASHIM_DEPS)
-build/protos.tar.bz2: $(PROTOS)
-
-build/%.tar.bz2:
-	@echo "Creating $@"
-	@tar -jc $^ > $@
+$(BUILD_DIR)/images/%/$(DUMMY):
+	@mkdir -p $(@D)
+	$(eval TARGET = ${patsubst $(BUILD_DIR)/images/%/$(DUMMY),%,${@}})
+	@echo "Docker:  building $(TARGET) image"
+	$(DBUILD) -f images/$(TARGET)/Dockerfile \
+		--build-arg GO_VER=${GO_VER} --build-arg ALPINE_VER=${ALPINE_VER} \
+		${BUILD_ARGS} \
+		-t $(BASE_DOCKER_NS)/fabric-$(TARGET) .
+	docker tag $(BASE_DOCKER_NS)/fabric-$(TARGET) \
+		$(DOCKER_NS)/fabric-$(TARGET):$(BASE_VERSION)
+	docker tag $(BASE_DOCKER_NS)/fabric-$(TARGET) \
+		$(DOCKER_NS)/fabric-$(TARGET):$(DOCKER_TAG)
+	@touch $@
 
 # builds release packages for the host platform
 release: $(patsubst %,release/%, $(MARCH))
@@ -305,33 +278,25 @@ release: $(patsubst %,release/%, $(MARCH))
 # builds release packages for all target platforms
 release-all: $(patsubst %,release/%, $(RELEASE_PLATFORMS))
 
-release/%: GO_LDFLAGS=-X $(pkgmap.$(@F))/metadata.Version=$(PROJECT_VERSION)
+release/%: GO_LDFLAGS=-X $(pkgmap.$(@F))/metadata.CommitSHA=$(EXTRA_VERSION)
 
 release/windows-amd64: GOOS=windows
-release/windows-amd64: GO_TAGS+= nopkcs11
 release/windows-amd64: $(patsubst %,release/windows-amd64/bin/%, $(RELEASE_PKGS)) release/windows-amd64/install
 
 release/darwin-amd64: GOOS=darwin
-release/darwin-amd64: GO_TAGS+= nopkcs11
 release/darwin-amd64: $(patsubst %,release/darwin-amd64/bin/%, $(RELEASE_PKGS)) release/darwin-amd64/install
 
 release/linux-amd64: GOOS=linux
-release/linux-amd64: GO_TAGS+= nopkcs11
 release/linux-amd64: $(patsubst %,release/linux-amd64/bin/%, $(RELEASE_PKGS)) release/linux-amd64/install
 
-release/%-amd64: DOCKER_ARCH=x86_64
 release/%-amd64: GOARCH=amd64
 release/linux-%: GOOS=linux
 
-release/linux-ppc64le: GOARCH=ppc64le
-release/linux-ppc64le: DOCKER_ARCH=ppc64le
-release/linux-ppc64le: GO_TAGS+= nopkcs11
-release/linux-ppc64le: $(patsubst %,release/linux-ppc64le/bin/%, $(RELEASE_PKGS)) release/linux-ppc64le/install
-
 release/linux-s390x: GOARCH=s390x
-release/linux-s390x: DOCKER_ARCH=s390x
-release/linux-s390x: GO_TAGS+= nopkcs11
 release/linux-s390x: $(patsubst %,release/linux-s390x/bin/%, $(RELEASE_PKGS)) release/linux-s390x/install
+
+release/linux-ppc64le: GOARCH=ppc64le
+release/linux-ppc64le: $(patsubst %,release/linux-ppc64le/bin/%, $(RELEASE_PKGS)) release/linux-ppc64le/install
 
 release/%/bin/configtxlator: $(PROJECT_FILES)
 	@echo "Building $@ for $(GOOS)-$(GOARCH)"
@@ -348,6 +313,18 @@ release/%/bin/cryptogen: $(PROJECT_FILES)
 	mkdir -p $(@D)
 	$(CGO_FLAGS) GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o $(abspath $@) -tags "$(GO_TAGS)" -ldflags "$(GO_LDFLAGS)" $(pkgmap.$(@F))
 
+release/%/bin/idemixgen: $(PROJECT_FILES)
+	@echo "Building $@ for $(GOOS)-$(GOARCH)"
+	mkdir -p $(@D)
+	$(CGO_FLAGS) GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o $(abspath $@) -tags "$(GO_TAGS)" -ldflags "$(GO_LDFLAGS)" $(pkgmap.$(@F))
+
+release/%/bin/discover: $(PROJECT_FILES)
+	@echo "Building $@ for $(GOOS)-$(GOARCH)"
+	mkdir -p $(@D)
+	$(CGO_FLAGS) GOOS=$(GOOS) GOARCH=$(GOARCH) go build -o $(abspath $@) -tags "$(GO_TAGS)" -ldflags "$(GO_LDFLAGS)" $(pkgmap.$(@F))
+
+release/%/bin/orderer: GO_LDFLAGS = $(patsubst %,-X $(PKGNAME)/common/metadata.%,$(METADATA_VAR))
+
 release/%/bin/orderer: $(PROJECT_FILES)
 	@echo "Building $@ for $(GOOS)-$(GOARCH)"
 	mkdir -p $(@D)
@@ -363,64 +340,75 @@ release/%/bin/peer: $(PROJECT_FILES)
 release/%/install: $(PROJECT_FILES)
 	mkdir -p $(@D)/bin
 	@cat $(@D)/../templates/get-docker-images.in \
-		| sed -e 's/_NS_/$(DOCKER_NS)/g' \
-		| sed -e 's/_ARCH_/$(DOCKER_ARCH)/g' \
-		| sed -e 's/_VERSION_/$(PROJECT_VERSION)/g' \
-		| sed -e 's/_BASE_DOCKER_TAG_/$(BASE_DOCKER_TAG)/g' \
+		| sed -e 's|_NS_|$(DOCKER_NS)|g' \
+		| sed -e 's|_ARCH_|$(GOARCH)|g' \
+		| sed -e 's|_VERSION_|$(PROJECT_VERSION)|g' \
+		| sed -e 's|_BASE_DOCKER_TAG_|$(BASE_DOCKER_TAG)|g' \
 		> $(@D)/bin/get-docker-images.sh
 		@chmod +x $(@D)/bin/get-docker-images.sh
-	@cat $(@D)/../templates/get-byfn.in \
-		| sed -e 's/_VERSION_/$(PROJECT_VERSION)/g' \
-		> $(@D)/bin/get-byfn.sh
-		@chmod +x $(@D)/bin/get-byfn.sh
 
 .PHONY: dist
-dist: dist-clean release
-	cd release/$(MARCH) && tar -czvf hyperledger-fabric-$(MARCH).$(PROJECT_VERSION).tar.gz *
+dist: dist-clean dist/$(MARCH)
 
-dist-all: dist-clean release-all $(patsubst %,dist/%, $(RELEASE_PLATFORMS))
+dist-all: dist-clean $(patsubst %,dist/%, $(RELEASE_PLATFORMS))
 
-dist/windows-amd64:
-	cd release/windows-amd64 && tar -czvf hyperledger-fabric-windows-amd64.$(PROJECT_VERSION).tar.gz *
-
-dist/darwin-amd64:
-	cd release/darwin-amd64 && tar -czvf hyperledger-fabric-darwin-amd64.$(PROJECT_VERSION).tar.gz *
-
-dist/linux-amd64:
-	cd release/linux-amd64 && tar -czvf hyperledger-fabric-linux-amd64.$(PROJECT_VERSION).tar.gz *
-
-dist/linux-ppc64le:
-	cd release/linux-ppc64le && tar -czvf hyperledger-fabric-linux-ppc64le.$(PROJECT_VERSION).tar.gz *
-
-dist/linux-s390x:
-	cd release/linux-s390x && tar -czvf hyperledger-fabric-linux-s390x.$(PROJECT_VERSION).tar.gz *
+dist/%: release/%
+	mkdir -p release/$(@F)/config
+	cp -r sampleconfig/*.yaml release/$(@F)/config
+	cd release/$(@F) && tar -czvf hyperledger-fabric-$(@F).$(PROJECT_VERSION).tar.gz *
 
 .PHONY: protos
 protos: buildenv
 	@$(DRUN) $(DOCKER_NS)/fabric-buildenv:$(DOCKER_TAG) ./scripts/compile_protos.sh
 
+%-docker-list:
+	$(eval TARGET = ${patsubst %-docker-list,%,${@}})
+	@echo $(DOCKER_NS)/fabric-$(TARGET):$(DOCKER_TAG)
+
+docker-list: $(patsubst %,%-docker-list, $(IMAGES))
+
 %-docker-clean:
 	$(eval TARGET = ${patsubst %-docker-clean,%,${@}})
-	-docker images -q $(DOCKER_NS)/fabric-$(TARGET) | xargs -I '{}' docker rmi -f '{}'
-	-@rm -rf build/image/$(TARGET) ||:
+	-docker images --quiet --filter=reference='$(DOCKER_NS)/fabric-$(TARGET):$(ARCH)-$(BASE_VERSION)$(if $(EXTRA_VERSION),-snapshot-*,)' | xargs docker rmi -f
+	-@rm -rf $(BUILD_DIR)/images/$(TARGET) ||:
 
 docker-clean: $(patsubst %,%-docker-clean, $(IMAGES))
 
+docker-tag-latest: $(IMAGES:%=%-docker-tag-latest)
+
+%-docker-tag-latest:
+	$(eval TARGET = ${patsubst %-docker-tag-latest,%,${@}})
+	docker tag $(DOCKER_NS)/fabric-$(TARGET):$(DOCKER_TAG) $(DOCKER_NS)/fabric-$(TARGET):latest
+
+docker-tag-stable: $(IMAGES:%=%-docker-tag-stable)
+
+%-docker-tag-stable:
+	$(eval TARGET = ${patsubst %-docker-tag-stable,%,${@}})
+	docker tag $(DOCKER_NS)/fabric-$(TARGET):$(DOCKER_TAG) $(DOCKER_NS)/fabric-$(TARGET):stable
+
+publish-images: $(RELEASE_IMAGES:%=%-publish-images) ## Build and publish docker images
+
+%-publish-images:
+	$(eval TARGET = ${patsubst %-publish-images,%,${@}})
+	@docker login $(DOCKER_HUB_USERNAME) $(DOCKER_HUB_PASSWORD)
+	@docker push $(DOCKER_NS)/fabric-$(TARGET):$(PROJECT_VERSION)
+
 .PHONY: clean
 clean: docker-clean unit-test-clean release-clean
-	-@rm -rf build ||:
+	-@rm -rf $(BUILD_DIR)
 
 .PHONY: clean-all
-clean-all: clean gotools-clean dist-clean release-clean unit-test-clean
-	-@rm -rf /var/hyperledger/* ||:
+clean-all: clean gotools-clean dist-clean
+	-@rm -rf /var/hyperledger/*
+	-@rm -rf docs/build/
 
 .PHONY: dist-clean
 dist-clean:
-	-@rm -rf release/windows-amd64/hyperledger-fabric-windows-amd64.$(PROJECT_VERSION).tar.gz ||:
-	-@rm -rf release/darwin-amd64/hyperledger-fabric-darwin-amd64.$(PROJECT_VERSION).tar.gz ||:
-	-@rm -rf release/linux-amd64/hyperledger-fabric-linux-amd64.$(PROJECT_VERSION).tar.gz ||:
-	-@rm -rf release/linux-ppc64le/hyperledger-fabric-linux-ppc64le.$(PROJECT_VERSION).tar.gz ||:
-	-@rm -rf release/linux-s390x/hyperledger-fabric-linux-s390x.$(PROJECT_VERSION).tar.gz ||:
+	-@rm -rf release/windows-amd64/hyperledger-fabric-windows-amd64.$(PROJECT_VERSION).tar.gz
+	-@rm -rf release/darwin-amd64/hyperledger-fabric-darwin-amd64.$(PROJECT_VERSION).tar.gz
+	-@rm -rf release/linux-amd64/hyperledger-fabric-linux-amd64.$(PROJECT_VERSION).tar.gz
+	-@rm -rf release/linux-s390x/hyperledger-fabric-linux-s390x.$(PROJECT_VERSION).tar.gz
+	-@rm -rf release/linux-ppc64le/hyperledger-fabric-linux-ppc64le.$(PROJECT_VERSION).tar.gz
 
 %-release-clean:
 	$(eval TARGET = ${patsubst %-release-clean,%,${@}})
@@ -430,4 +418,3 @@ release-clean: $(patsubst %,%-release-clean, $(RELEASE_PLATFORMS))
 
 .PHONY: unit-test-clean
 unit-test-clean:
-	cd unit-test && docker-compose down

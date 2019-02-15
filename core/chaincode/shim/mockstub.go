@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 // Package shim provides APIs for the chaincode to access its state
@@ -20,7 +10,6 @@ package shim
 
 import (
 	"container/list"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -29,6 +18,7 @@ import (
 	"github.com/hyperledger/fabric/protos/ledger/queryresult"
 	pb "github.com/hyperledger/fabric/protos/peer"
 	"github.com/op/go-logging"
+	"github.com/pkg/errors"
 )
 
 // Logger for the shim package.
@@ -64,10 +54,29 @@ type MockStub struct {
 
 	// mocked signedProposal
 	signedProposal *pb.SignedProposal
+
+	// stores a channel ID of the proposal
+	ChannelID string
+
+	PvtState map[string]map[string][]byte
+
+	// stores per-key endorsement policy, first map index is the collection, second map index is the key
+	EndorsementPolicies map[string]map[string][]byte
+
+	// channel to store ChaincodeEvents
+	ChaincodeEventsChannel chan *pb.ChaincodeEvent
+
+	Creator []byte
+
+	Decorations map[string][]byte
 }
 
 func (stub *MockStub) GetTxID() string {
 	return stub.TxID
+}
+
+func (stub *MockStub) GetChannelID() string {
+	return stub.ChannelID
 }
 
 func (stub *MockStub) GetArgs() [][]byte {
@@ -135,7 +144,7 @@ func (stub *MockStub) MockInvoke(uuid string, args [][]byte) pb.Response {
 }
 
 func (stub *MockStub) GetDecorations() map[string][]byte {
-	return nil
+	return stub.Decorations
 }
 
 // Invoke this chaincode, also starts and ends a transaction.
@@ -148,6 +157,51 @@ func (stub *MockStub) MockInvokeWithSignedProposal(uuid string, args [][]byte, s
 	return res
 }
 
+func (stub *MockStub) GetPrivateData(collection string, key string) ([]byte, error) {
+	m, in := stub.PvtState[collection]
+
+	if !in {
+		return nil, nil
+	}
+
+	return m[key], nil
+}
+
+func (stub *MockStub) GetPrivateDataHash(collection, key string) ([]byte, error) {
+	return nil, errors.New("Not Implemented")
+}
+
+func (stub *MockStub) PutPrivateData(collection string, key string, value []byte) error {
+	m, in := stub.PvtState[collection]
+	if !in {
+		stub.PvtState[collection] = make(map[string][]byte)
+		m, in = stub.PvtState[collection]
+	}
+
+	m[key] = value
+
+	return nil
+}
+
+func (stub *MockStub) DelPrivateData(collection string, key string) error {
+	return errors.New("Not Implemented")
+}
+
+func (stub *MockStub) GetPrivateDataByRange(collection, startKey, endKey string) (StateQueryIteratorInterface, error) {
+	return nil, errors.New("Not Implemented")
+}
+
+func (stub *MockStub) GetPrivateDataByPartialCompositeKey(collection, objectType string, attributes []string) (StateQueryIteratorInterface, error) {
+	return nil, errors.New("Not Implemented")
+}
+
+func (stub *MockStub) GetPrivateDataQueryResult(collection, query string) (StateQueryIteratorInterface, error) {
+	// Not implemented since the mock engine does not have a query engine.
+	// However, a very simple query engine that supports string matching
+	// could be implemented to test that the framework supports queries
+	return nil, errors.New("Not Implemented")
+}
+
 // GetState retrieves the value for a given key from the ledger
 func (stub *MockStub) GetState(key string) ([]byte, error) {
 	value := stub.State[key]
@@ -158,8 +212,15 @@ func (stub *MockStub) GetState(key string) ([]byte, error) {
 // PutState writes the specified `value` and `key` into the ledger.
 func (stub *MockStub) PutState(key string, value []byte) error {
 	if stub.TxID == "" {
-		mockLogger.Error("Cannot PutState without a transactions - call stub.MockTransactionStart()?")
-		return errors.New("Cannot PutState without a transactions - call stub.MockTransactionStart()?")
+		err := errors.New("cannot PutState without a transactions - call stub.MockTransactionStart()?")
+		mockLogger.Errorf("%+v", err)
+		return err
+	}
+
+	// If the value is nil or empty, delete the key
+	if len(value) == 0 {
+		mockLogger.Debug("MockStub", stub.Name, "PutState called, but value is nil or empty. Delete ", key)
+		return stub.DelState(key)
 	}
 
 	mockLogger.Debug("MockStub", stub.Name, "Putting", key, value)
@@ -228,13 +289,13 @@ func (stub *MockStub) GetQueryResult(query string) (StateQueryIteratorInterface,
 	// Not implemented since the mock engine does not have a query engine.
 	// However, a very simple query engine that supports string matching
 	// could be implemented to test that the framework supports queries
-	return nil, errors.New("Not Implemented")
+	return nil, errors.New("not implemented")
 }
 
 // GetHistoryForKey function can be invoked by a chaincode to return a history of
 // key values across time. GetHistoryForKey is intended to be used for read-only queries.
 func (stub *MockStub) GetHistoryForKey(key string) (HistoryQueryIteratorInterface, error) {
-	return nil, errors.New("Not Implemented")
+	return nil, errors.New("not implemented")
 }
 
 //GetStateByPartialCompositeKey function can be invoked by a chaincode to query the
@@ -263,6 +324,21 @@ func (stub *MockStub) SplitCompositeKey(compositeKey string) (string, []string, 
 	return splitCompositeKey(compositeKey)
 }
 
+func (stub *MockStub) GetStateByRangeWithPagination(startKey, endKey string, pageSize int32,
+	bookmark string) (StateQueryIteratorInterface, *pb.QueryResponseMetadata, error) {
+	return nil, nil, nil
+}
+
+func (stub *MockStub) GetStateByPartialCompositeKeyWithPagination(objectType string, keys []string,
+	pageSize int32, bookmark string) (StateQueryIteratorInterface, *pb.QueryResponseMetadata, error) {
+	return nil, nil, nil
+}
+
+func (stub *MockStub) GetQueryResultWithPagination(query string, pageSize int32,
+	bookmark string) (StateQueryIteratorInterface, *pb.QueryResponseMetadata, error) {
+	return nil, nil, nil
+}
+
 // InvokeChaincode calls a peered chaincode.
 // E.g. stub1.InvokeChaincode("stub2Hash", funcArgs, channel)
 // Before calling this make sure to create another MockStub stub2, call stub2.MockInit(uuid, func, args)
@@ -281,9 +357,8 @@ func (stub *MockStub) InvokeChaincode(chaincodeName string, args [][]byte, chann
 	return res
 }
 
-// Not implemented
 func (stub *MockStub) GetCreator() ([]byte, error) {
-	return nil, nil
+	return stub.Creator, nil
 }
 
 // Not implemented
@@ -321,9 +396,38 @@ func (stub *MockStub) GetTxTimestamp() (*timestamp.Timestamp, error) {
 	return stub.TxTimestamp, nil
 }
 
-// Not implemented
 func (stub *MockStub) SetEvent(name string, payload []byte) error {
+	stub.ChaincodeEventsChannel <- &pb.ChaincodeEvent{EventName: name, Payload: payload}
 	return nil
+}
+
+func (stub *MockStub) SetStateValidationParameter(key string, ep []byte) error {
+	return stub.SetPrivateDataValidationParameter("", key, ep)
+}
+
+func (stub *MockStub) GetStateValidationParameter(key string) ([]byte, error) {
+	return stub.GetPrivateDataValidationParameter("", key)
+}
+
+func (stub *MockStub) SetPrivateDataValidationParameter(collection, key string, ep []byte) error {
+	m, in := stub.EndorsementPolicies[collection]
+	if !in {
+		stub.EndorsementPolicies[collection] = make(map[string][]byte)
+		m, in = stub.EndorsementPolicies[collection]
+	}
+
+	m[key] = ep
+	return nil
+}
+
+func (stub *MockStub) GetPrivateDataValidationParameter(collection, key string) ([]byte, error) {
+	m, in := stub.EndorsementPolicies[collection]
+
+	if !in {
+		return nil, nil
+	}
+
+	return m[key], nil
 }
 
 // Constructor to initialise the internal State map
@@ -333,8 +437,12 @@ func NewMockStub(name string, cc Chaincode) *MockStub {
 	s.Name = name
 	s.cc = cc
 	s.State = make(map[string][]byte)
+	s.PvtState = make(map[string]map[string][]byte)
+	s.EndorsementPolicies = make(map[string]map[string][]byte)
 	s.Invokables = make(map[string]*MockStub)
 	s.Keys = list.New()
+	s.ChaincodeEventsChannel = make(chan *pb.ChaincodeEvent, 100) //define large capacity for non-blocking setEvent calls.
+	s.Decorations = make(map[string][]byte)
 
 	return s
 }
@@ -356,7 +464,7 @@ type MockStateRangeQueryIterator struct {
 func (iter *MockStateRangeQueryIterator) HasNext() bool {
 	if iter.Closed {
 		// previously called Close()
-		mockLogger.Error("HasNext() but already closed")
+		mockLogger.Debug("HasNext() but already closed")
 		return false
 	}
 
@@ -374,7 +482,7 @@ func (iter *MockStateRangeQueryIterator) HasNext() bool {
 		comp1 := strings.Compare(current.Value.(string), iter.StartKey)
 		comp2 := strings.Compare(current.Value.(string), iter.EndKey)
 		if comp1 >= 0 {
-			if comp2 <= 0 {
+			if comp2 < 0 {
 				mockLogger.Debug("HasNext() got next")
 				return true
 			} else {
@@ -394,13 +502,15 @@ func (iter *MockStateRangeQueryIterator) HasNext() bool {
 // Next returns the next key and value in the range query iterator.
 func (iter *MockStateRangeQueryIterator) Next() (*queryresult.KV, error) {
 	if iter.Closed == true {
-		mockLogger.Error("MockStateRangeQueryIterator.Next() called after Close()")
-		return nil, errors.New("MockStateRangeQueryIterator.Next() called after Close()")
+		err := errors.New("MockStateRangeQueryIterator.Next() called after Close()")
+		mockLogger.Errorf("%+v", err)
+		return nil, err
 	}
 
 	if iter.HasNext() == false {
-		mockLogger.Error("MockStateRangeQueryIterator.Next() called when it does not HaveNext()")
-		return nil, errors.New("MockStateRangeQueryIterator.Next() called when it does not HaveNext()")
+		err := errors.New("MockStateRangeQueryIterator.Next() called when it does not HaveNext()")
+		mockLogger.Errorf("%+v", err)
+		return nil, err
 	}
 
 	for iter.Current != nil {
@@ -408,7 +518,7 @@ func (iter *MockStateRangeQueryIterator) Next() (*queryresult.KV, error) {
 		comp2 := strings.Compare(iter.Current.Value.(string), iter.EndKey)
 		// compare to start and end keys. or, if this is an open-ended query for
 		// all keys, it should always return the key and value
-		if (comp1 >= 0 && comp2 <= 0) || (iter.StartKey == "" && iter.EndKey == "") {
+		if (comp1 >= 0 && comp2 < 0) || (iter.StartKey == "" && iter.EndKey == "") {
 			key := iter.Current.Value.(string)
 			value, err := iter.Stub.GetState(key)
 			iter.Current = iter.Current.Next()
@@ -416,16 +526,18 @@ func (iter *MockStateRangeQueryIterator) Next() (*queryresult.KV, error) {
 		}
 		iter.Current = iter.Current.Next()
 	}
-	mockLogger.Error("MockStateRangeQueryIterator.Next() went past end of range")
-	return nil, errors.New("MockStateRangeQueryIterator.Next() went past end of range")
+	err := errors.New("MockStateRangeQueryIterator.Next() went past end of range")
+	mockLogger.Errorf("%+v", err)
+	return nil, err
 }
 
 // Close closes the range query iterator. This should be called when done
 // reading from the iterator to free up resources.
 func (iter *MockStateRangeQueryIterator) Close() error {
 	if iter.Closed == true {
-		mockLogger.Error("MockStateRangeQueryIterator.Close() called after Close()")
-		return errors.New("MockStateRangeQueryIterator.Close() called after Close()")
+		err := errors.New("MockStateRangeQueryIterator.Close() called after Close()")
+		mockLogger.Errorf("%+v", err)
+		return err
 	}
 
 	iter.Closed = true

@@ -19,9 +19,8 @@ package common
 import (
 	"fmt"
 
-	"github.com/hyperledger/fabric/common/util"
-
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric/common/util"
 )
 
 // SignedData is used to represent the general triplet required to verify a signature
@@ -87,7 +86,7 @@ func (env *Envelope) AsSignedData() ([]*SignedData, error) {
 		return nil, fmt.Errorf("GetSignatureHeaderFromBytes failed, err %s", err)
 	}
 
-	return []*SignedData{&SignedData{
+	return []*SignedData{{
 		Data:      env.Payload,
 		Identity:  shdr.Creator,
 		Signature: env.Signature,

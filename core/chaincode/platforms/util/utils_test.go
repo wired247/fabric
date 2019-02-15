@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package util
@@ -31,7 +21,7 @@ import (
 	"time"
 
 	"github.com/hyperledger/fabric/common/util"
-	"github.com/hyperledger/fabric/core/config"
+	"github.com/hyperledger/fabric/core/config/configtest"
 	cutil "github.com/hyperledger/fabric/core/container/util"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
@@ -39,6 +29,9 @@ import (
 
 // TestHashContentChange changes a random byte in a content and checks for hash change
 func TestHashContentChange(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping TestHashContentChange")
+	}
 	b := []byte("firstcontent")
 	hash := util.ComputeSHA256(b)
 
@@ -74,6 +67,9 @@ func TestHashContentChange(t *testing.T) {
 
 // TestHashLenChange changes a random length of a content and checks for hash change
 func TestHashLenChange(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping TestHashLenChange")
+	}
 	b := []byte("firstcontent")
 	hash := util.ComputeSHA256(b)
 
@@ -96,6 +92,9 @@ func TestHashLenChange(t *testing.T) {
 
 // TestHashOrderChange changes a order of hash computation over a list of lines and checks for hash change
 func TestHashOrderChange(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping TestHashOrderChange")
+	}
 	b := []byte("firstcontent")
 	hash := util.ComputeSHA256(b)
 
@@ -145,6 +144,9 @@ func TestHashOrderChange(t *testing.T) {
 
 // TestHashOverFiles computes hash over a directory and ensures it matches precomputed, hardcoded, hash
 func TestHashOverFiles(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping TestHashOverFiles")
+	}
 	b := []byte("firstcontent")
 	hash := util.ComputeSHA256(b)
 
@@ -166,6 +168,9 @@ func TestHashOverFiles(t *testing.T) {
 }
 
 func TestHashDiffDir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping TestHashDiffDir")
+	}
 	b := []byte("firstcontent")
 	hash := util.ComputeSHA256(b)
 
@@ -183,6 +188,9 @@ func TestHashDiffDir(t *testing.T) {
 }
 
 func TestHashSameDir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping TestHashSameDir")
+	}
 	assert := assert.New(t)
 
 	b := []byte("firstcontent")
@@ -207,6 +215,9 @@ func TestHashSameDir(t *testing.T) {
 }
 
 func TestHashBadWriter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping TestHashBadWriter")
+	}
 	b := []byte("firstcontent")
 	hash := util.ComputeSHA256(b)
 
@@ -225,12 +236,15 @@ func TestHashBadWriter(t *testing.T) {
 		"HashFilesInDir invoked with closed writer, should have failed")
 }
 
-// TestHashNonExistentDir tests HashFilesInDir with non existant directory
+// TestHashNonExistentDir tests HashFilesInDir with non existent directory
 func TestHashNonExistentDir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping TestHashNonExistentDir")
+	}
 	b := []byte("firstcontent")
 	hash := util.ComputeSHA256(b)
 	_, err := HashFilesInDir(".", "idontexist", hash, nil)
-	assert.Error(t, err, "Expected an error for non existent directory %s", "idontexist")
+	assert.Error(t, err, "Expected an error for non existent directory idontexist")
 }
 
 // TestIsCodeExist tests isCodeExist function
@@ -248,12 +262,12 @@ func TestIsCodeExist(t *testing.T) {
 	path = dir + "/blah"
 	err = IsCodeExist(path)
 	assert.Error(err,
-		"%s directory does not exist, IsCodeExist should have returned error", path)
+		fmt.Sprintf("%s directory does not exist, IsCodeExist should have returned error", path))
 
 	f := createTempFile(t)
 	defer os.Remove(f)
 	err = IsCodeExist(f)
-	assert.Error(err, "%s is a file, IsCodeExist should have returned error", f)
+	assert.Error(err, fmt.Sprintf("%s is a file, IsCodeExist should have returned error", f))
 }
 
 // TestDockerBuild tests DockerBuild function
@@ -315,6 +329,7 @@ func createTempFile(t *testing.T) string {
 	return tmpfile.Name()
 }
 
+// TODO restore this test once multi-arch has been established
 func TestDockerPull(t *testing.T) {
 	codepackage, output := io.Pipe()
 	go func() {
@@ -326,7 +341,7 @@ func TestDockerPull(t *testing.T) {
 
 	binpackage := bytes.NewBuffer(nil)
 
-	// Perform a nop operation within a fixed target.  We choose 1.0.0-alpha2 because we know it's
+	// Perform a nop operation within a fixed target.  We choose 1.1.0 because we know it's
 	// published and available.  Ideally we could choose something that we know is both multi-arch
 	// and ok to delete prior to executing DockerBuild.  This would ensure that we exercise the
 	// image pull logic.  However, no suitable target exists that meets all the criteria.  Therefore
@@ -338,7 +353,7 @@ func TestDockerPull(t *testing.T) {
 	// Future considerations: publish a known dummy image that is multi-arch and free to randomly
 	// delete, and use that here instead.
 	err := DockerBuild(DockerBuildOptions{
-		Image:        cutil.ParseDockerfileTemplate("hyperledger/fabric-ccenv:$(ARCH)-1.0.0-alpha2"),
+		Image:        cutil.ParseDockerfileTemplate("hyperledger/fabric-ccenv:$(ARCH)-1.1.0"),
 		Cmd:          "/bin/true",
 		InputStream:  codepackage,
 		OutputStream: binpackage,
@@ -351,7 +366,7 @@ func TestDockerPull(t *testing.T) {
 func TestMain(m *testing.M) {
 	viper.SetConfigName("core")
 	viper.SetEnvPrefix("CORE")
-	config.AddDevConfigPath(nil)
+	configtest.AddDevConfigPath(nil)
 	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	viper.AutomaticEnv()
 	if err := viper.ReadInConfig(); err != nil {

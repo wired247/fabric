@@ -9,17 +9,22 @@ package common_test
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/hyperledger/fabric/common/flogging"
 	"github.com/hyperledger/fabric/common/util"
-	"github.com/hyperledger/fabric/core/config"
+	"github.com/hyperledger/fabric/core/config/configtest"
 	"github.com/hyperledger/fabric/msp"
 	"github.com/hyperledger/fabric/peer/common"
-	pb "github.com/hyperledger/fabric/protos/peer"
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 )
 
 func TestInitConfig(t *testing.T) {
+	cleanup := configtest.SetDevFabricConfigPath(t)
+	defer cleanup()
+
 	type args struct {
 		cmdRoot string
 	}
@@ -53,111 +58,53 @@ func TestInitConfig(t *testing.T) {
 	}
 }
 
-func TestINitCryptoMissingDir(t *testing.T) {
+func TestInitCryptoMissingDir(t *testing.T) {
 	dir := os.TempDir() + "/" + util.GenerateUUID()
-	err := common.InitCrypto(dir, "DEFAULT")
+	err := common.InitCrypto(dir, "SampleOrg", msp.ProviderTypeToString(msp.FABRIC))
 	assert.Error(t, err, "Should be able to initialize crypto with non-existing directory")
-	assert.Contains(t, err.Error(), fmt.Sprintf("missing %s folder", dir))
+	assert.Contains(t, err.Error(), fmt.Sprintf("folder \"%s\" does not exist", dir))
 }
 
 func TestInitCrypto(t *testing.T) {
-
-	mspConfigPath, err := config.GetDevMspDir()
-	localMspId := "DEFAULT"
-	err = common.InitCrypto(mspConfigPath, localMspId)
+	mspConfigPath, err := configtest.GetDevMspDir()
+	localMspId := "SampleOrg"
+	err = common.InitCrypto(mspConfigPath, localMspId, msp.ProviderTypeToString(msp.FABRIC))
 	assert.NoError(t, err, "Unexpected error [%s] calling InitCrypto()", err)
-	err = common.InitCrypto("/etc/foobaz", localMspId)
-	assert.Error(t, err, "Expected error [%s] calling InitCrypto()", err)
+	err = common.InitCrypto("/etc/foobaz", localMspId, msp.ProviderTypeToString(msp.FABRIC))
+	assert.Error(t, err, fmt.Sprintf("Expected error [%s] calling InitCrypto()", err))
 	localMspId = ""
-	err = common.InitCrypto(mspConfigPath, localMspId)
-	assert.Error(t, err, "Expected error [%s] calling InitCrypto()", err)
+	err = common.InitCrypto(mspConfigPath, localMspId, msp.ProviderTypeToString(msp.FABRIC))
+	assert.Error(t, err, fmt.Sprintf("Expected error [%s] calling InitCrypto()", err))
 }
 
-func TestGetEndorserClient(t *testing.T) {
-	tests := []struct {
-		name    string
-		want    pb.EndorserClient
-		wantErr bool
-	}{
-		{
-			name:    "Should not return EndorserClient, there is no peer running",
-			want:    nil,
-			wantErr: true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := common.GetEndorserClient()
-			if (err != nil) != tt.wantErr {
-				t.Errorf("GetEndorserClient() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-		})
-	}
-}
+func TestSetBCCSPKeystorePath(t *testing.T) {
+	cfgKey := "peer.BCCSP.SW.FileKeyStore.KeyStore"
+	cfgPath := "./testdata"
+	absPath, _ := filepath.Abs(cfgPath)
+	keystorePath := "/msp/keystore"
 
-func TestSetLogLevelFromViper(t *testing.T) {
-	type args struct {
-		module string
-	}
-	tests := []struct {
-		name    string
-		args    args
-		wantErr bool
-	}{
-		{
-			name:    "Empty module name",
-			args:    args{module: ""},
-			wantErr: true,
-		},
-		{
-			name:    "Invalid module name",
-			args:    args{module: "policy"},
-			wantErr: true,
-		},
-		{
-			name:    "Valid module name",
-			args:    args{module: "cauthdsl"},
-			wantErr: false,
-		},
-		{
-			name:    "Valid module name",
-			args:    args{module: "peer"},
-			wantErr: false,
-		},
-		{
-			name:    "Valid module name",
-			args:    args{module: "gossip"},
-			wantErr: false,
-		},
-		{
-			name:    "Valid module name",
-			args:    args{module: "grpc"},
-			wantErr: false,
-		},
-		{
-			name:    "Valid module name",
-			args:    args{module: "msp"},
-			wantErr: false,
-		},
-		{
-			name:    "Valid module name",
-			args:    args{module: "ledger"},
-			wantErr: false,
-		},
-		{
-			name:    "Valid module name",
-			args:    args{module: "policies"},
-			wantErr: false,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if err := common.SetLogLevelFromViper(tt.args.module); (err != nil) != tt.wantErr {
-				t.Errorf("SetLogLevelFromViper() args = %v error = %v, wantErr %v", tt.args, err, tt.wantErr)
-			}
-		})
-	}
+	os.Setenv("FABRIC_CFG_PATH", cfgPath)
+	viper.Reset()
+	_ = common.InitConfig("notset")
+	common.SetBCCSPKeystorePath()
+	t.Log(viper.GetString(cfgKey))
+	assert.Equal(t, "", viper.GetString(cfgKey))
+
+	viper.Reset()
+	_ = common.InitConfig("absolute")
+	common.SetBCCSPKeystorePath()
+	t.Log(viper.GetString(cfgKey))
+	assert.Equal(t, keystorePath, viper.GetString(cfgKey))
+
+	viper.Reset()
+	_ = common.InitConfig("relative")
+	common.SetBCCSPKeystorePath()
+	t.Log(viper.GetString(cfgKey))
+	assert.Equal(t, filepath.Join(absPath, keystorePath),
+		viper.GetString(cfgKey))
+
+	viper.Reset()
+	os.Unsetenv("FABRIC_CFG_PATH")
 }
 
 func TestCheckLogLevel(t *testing.T) {
@@ -170,27 +117,27 @@ func TestCheckLogLevel(t *testing.T) {
 		wantErr bool
 	}{
 		{
-			name:    "Empty module name",
+			name:    "Empty level",
 			args:    args{level: ""},
 			wantErr: true,
 		},
 		{
-			name:    "Valie module name",
+			name:    "Valid level",
 			args:    args{level: "warning"},
 			wantErr: false,
 		},
 		{
-			name:    "Valie module name",
+			name:    "Invalid level",
 			args:    args{level: "foobaz"},
 			wantErr: true,
 		},
 		{
-			name:    "Valie module name",
+			name:    "Valid level",
 			args:    args{level: "error"},
 			wantErr: false,
 		},
 		{
-			name:    "Valie module name",
+			name:    "Valid level",
 			args:    args{level: "info"},
 			wantErr: false,
 		},
@@ -225,4 +172,29 @@ func TestGetDefaultSigner(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestInitCmd(t *testing.T) {
+	cleanup := configtest.SetDevFabricConfigPath(t)
+	defer cleanup()
+	defer viper.Reset()
+
+	// test that InitCmd doesn't remove existing loggers from the logger levels map
+	flogging.MustGetLogger("test")
+	flogging.ActivateSpec("test=error")
+	assert.Equal(t, "error", flogging.Global.Level("test").String())
+	flogging.MustGetLogger("chaincode")
+	assert.Equal(t, flogging.Global.DefaultLevel().String(), flogging.Global.Level("chaincode").String())
+	flogging.MustGetLogger("test.test2")
+	flogging.ActivateSpec("test.test2=warn")
+	assert.Equal(t, "warn", flogging.Global.Level("test.test2").String())
+
+	origEnvValue := os.Getenv("FABRIC_LOGGING_SPEC")
+	os.Setenv("FABRIC_LOGGING_SPEC", "chaincode=debug:test.test2=fatal:abc=error")
+	common.InitCmd(nil, nil)
+	assert.Equal(t, "debug", flogging.Global.Level("chaincode").String())
+	assert.Equal(t, "info", flogging.Global.Level("test").String())
+	assert.Equal(t, "fatal", flogging.Global.Level("test.test2").String())
+	assert.Equal(t, "error", flogging.Global.Level("abc").String())
+	os.Setenv("FABRIC_LOGGING_SPEC", origEnvValue)
 }

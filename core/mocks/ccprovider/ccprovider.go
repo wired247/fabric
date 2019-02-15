@@ -1,25 +1,13 @@
 /*
-Copyright IBM Corp. 2017 All Rights Reserved.
+Copyright IBM Corp. 2018 All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package ccprovider
 
 import (
-	"context"
-
-	"github.com/hyperledger/fabric/core/chaincode/shim"
+	commonledger "github.com/hyperledger/fabric/common/ledger"
 	"github.com/hyperledger/fabric/core/common/ccprovider"
 	"github.com/hyperledger/fabric/core/ledger"
 	"github.com/hyperledger/fabric/protos/peer"
@@ -37,55 +25,166 @@ type MockCcProviderFactory struct {
 
 // NewChaincodeProvider returns a mock implementation of the ccprovider.ChaincodeProvider interface
 func (c *MockCcProviderFactory) NewChaincodeProvider() ccprovider.ChaincodeProvider {
-	return &mockCcProviderImpl{c.ExecuteResultProvider}
+	return &MockCcProviderImpl{ExecuteResultProvider: c.ExecuteResultProvider}
 }
 
 // mockCcProviderImpl is a mock implementation of the chaincode provider
-type mockCcProviderImpl struct {
-	executeResultProvider ExecuteChaincodeResultProvider
+type MockCcProviderImpl struct {
+	ExecuteResultProvider    ExecuteChaincodeResultProvider
+	ExecuteChaincodeResponse *peer.Response
 }
 
-type mockCcProviderContextImpl struct {
+type MockTxSim struct {
+	GetTxSimulationResultsRv *ledger.TxSimulationResults
 }
 
-// GetContext does nothing
-func (c *mockCcProviderImpl) GetContext(ledger ledger.PeerLedger, txid string) (context.Context, error) {
+func (m *MockTxSim) GetState(namespace string, key string) ([]byte, error) {
 	return nil, nil
 }
 
-// GetCCContext does nothing
-func (c *mockCcProviderImpl) GetCCContext(cid, name, version, txid string, syscc bool, signedProp *peer.SignedProposal, prop *peer.Proposal) interface{} {
-	return &mockCcProviderContextImpl{}
+func (m *MockTxSim) GetStateMultipleKeys(namespace string, keys []string) ([][]byte, error) {
+	return nil, nil
 }
 
-// GetCCValidationInfoFromLSCC does nothing
-func (c *mockCcProviderImpl) GetCCValidationInfoFromLSCC(ctxt context.Context, txid string, signedProp *peer.SignedProposal, prop *peer.Proposal, chainID string, chaincodeID string) (string, []byte, error) {
-	return "vscc", nil, nil
+func (m *MockTxSim) GetStateRangeScanIterator(namespace string, startKey string, endKey string) (commonledger.ResultsIterator, error) {
+	return nil, nil
 }
 
-// ExecuteChaincode does nothing
-func (c *mockCcProviderImpl) ExecuteChaincode(ctxt context.Context, cccid interface{}, args [][]byte) (*peer.Response, *peer.ChaincodeEvent, error) {
-	if c.executeResultProvider != nil {
-		return c.executeResultProvider.ExecuteChaincodeResult()
-	}
-	return &peer.Response{Status: shim.OK}, nil, nil
+func (m *MockTxSim) GetStateRangeScanIteratorWithMetadata(namespace string, startKey, endKey string, metadata map[string]interface{}) (ledger.QueryResultsIterator, error) {
+	return nil, nil
 }
 
-// Execute executes the chaincode given context and spec (invocation or deploy)
-func (c *mockCcProviderImpl) Execute(ctxt context.Context, cccid interface{}, spec interface{}) (*peer.Response, *peer.ChaincodeEvent, error) {
-	return nil, nil, nil
+func (m *MockTxSim) ExecuteQuery(namespace, query string) (commonledger.ResultsIterator, error) {
+	return nil, nil
 }
 
-// ExecuteWithErrorFilter executes the chaincode given context and spec and returns payload
-func (c *mockCcProviderImpl) ExecuteWithErrorFilter(ctxt context.Context, cccid interface{}, spec interface{}) ([]byte, *peer.ChaincodeEvent, error) {
-	return nil, nil, nil
+func (m *MockTxSim) ExecuteQueryWithMetadata(namespace, query string, metadata map[string]interface{}) (ledger.QueryResultsIterator, error) {
+	return nil, nil
 }
 
-// Stop stops the chaincode given context and deployment spec
-func (c *mockCcProviderImpl) Stop(ctxt context.Context, cccid interface{}, spec *peer.ChaincodeDeploymentSpec) error {
+func (m *MockTxSim) Done() {
+}
+
+func (m *MockTxSim) SetState(namespace string, key string, value []byte) error {
 	return nil
 }
 
-// ReleaseContext does nothing
-func (c *mockCcProviderImpl) ReleaseContext() {
+func (m *MockTxSim) DeleteState(namespace string, key string) error {
+	return nil
+}
+
+func (m *MockTxSim) SetStateMultipleKeys(namespace string, kvs map[string][]byte) error {
+	return nil
+}
+
+func (m *MockTxSim) ExecuteUpdate(query string) error {
+	return nil
+}
+
+func (m *MockTxSim) GetTxSimulationResults() (*ledger.TxSimulationResults, error) {
+	return m.GetTxSimulationResultsRv, nil
+}
+
+func (m *MockTxSim) DeletePrivateData(namespace, collection, key string) error {
+	return nil
+}
+
+func (m *MockTxSim) ExecuteQueryOnPrivateData(namespace, collection, query string) (commonledger.ResultsIterator, error) {
+	return nil, nil
+}
+
+func (m *MockTxSim) GetPrivateData(namespace, collection, key string) ([]byte, error) {
+	return nil, nil
+}
+
+func (m *MockTxSim) GetPrivateDataHash(namespace, collection, key string) ([]byte, error) {
+	return nil, nil
+}
+
+func (m *MockTxSim) GetPrivateDataMultipleKeys(namespace, collection string, keys []string) ([][]byte, error) {
+	return nil, nil
+}
+
+func (m *MockTxSim) GetPrivateDataRangeScanIterator(namespace, collection, startKey, endKey string) (commonledger.ResultsIterator, error) {
+	return nil, nil
+}
+
+func (m *MockTxSim) SetPrivateData(namespace, collection, key string, value []byte) error {
+	return nil
+}
+
+func (m *MockTxSim) SetPrivateDataMultipleKeys(namespace, collection string, kvs map[string][]byte) error {
+	return nil
+}
+
+func (m *MockTxSim) GetStateMetadata(namespace, key string) (map[string][]byte, error) {
+	return nil, nil
+}
+
+func (m *MockTxSim) GetPrivateDataMetadata(namespace, collection, key string) (map[string][]byte, error) {
+	return nil, nil
+}
+
+func (m *MockTxSim) GetPrivateDataMetadataByHash(namespace, collection string, keyhash []byte) (map[string][]byte, error) {
+	return nil, nil
+}
+
+func (m *MockTxSim) SetStateMetadata(namespace, key string, metadata map[string][]byte) error {
+	return nil
+}
+
+func (m *MockTxSim) DeleteStateMetadata(namespace, key string) error {
+	return nil
+}
+
+func (m *MockTxSim) SetPrivateDataMetadata(namespace, collection, key string, metadata map[string][]byte) error {
+	return nil
+}
+
+func (m *MockTxSim) DeletePrivateDataMetadata(namespace, collection, key string) error {
+	return nil
+}
+
+// ExecuteInit executes the chaincode given context and spec deploy
+func (c *MockCcProviderImpl) ExecuteLegacyInit(txParams *ccprovider.TransactionParams, cccid *ccprovider.CCContext, spec *peer.ChaincodeDeploymentSpec) (*peer.Response, *peer.ChaincodeEvent, error) {
+	return &peer.Response{}, nil, nil
+}
+
+// Execute executes the chaincode given context and spec invocation
+func (c *MockCcProviderImpl) Execute(txParams *ccprovider.TransactionParams, cccid *ccprovider.CCContext, spec *peer.ChaincodeInput) (*peer.Response, *peer.ChaincodeEvent, error) {
+	return &peer.Response{}, nil, nil
+}
+
+// Stop stops the chaincode given context and deployment spec
+func (c *MockCcProviderImpl) Stop(ccci *ccprovider.ChaincodeContainerInfo) error {
+	return nil
+}
+
+type MockChaincodeDefinition struct {
+	NameRv          string
+	VersionRv       string
+	EndorsementStr  string
+	ValidationStr   string
+	ValidationBytes []byte
+	HashRv          []byte
+}
+
+func (m *MockChaincodeDefinition) CCName() string {
+	return m.NameRv
+}
+
+func (m *MockChaincodeDefinition) Hash() []byte {
+	return m.HashRv
+}
+
+func (m *MockChaincodeDefinition) CCVersion() string {
+	return m.VersionRv
+}
+
+func (m *MockChaincodeDefinition) Validation() (string, []byte) {
+	return m.ValidationStr, m.ValidationBytes
+}
+
+func (m *MockChaincodeDefinition) Endorsement() string {
+	return m.EndorsementStr
 }

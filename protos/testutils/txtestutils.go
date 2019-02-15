@@ -51,8 +51,8 @@ func init() {
 	}
 }
 
-// ConstractBytesProposalResponsePayload constructs a ProposalResponsePayload byte for tests with a default signer.
-func ConstractBytesProposalResponsePayload(chainID string, ccid *pb.ChaincodeID, pResponse *pb.Response, simulationResults []byte) ([]byte, error) {
+// ConstructBytesProposalResponsePayload constructs a ProposalResponsePayload byte for tests with a default signer.
+func ConstructBytesProposalResponsePayload(chainID string, ccid *pb.ChaincodeID, pResponse *pb.Response, simulationResults []byte) ([]byte, error) {
 	ss, err := signer.Serialize()
 	if err != nil {
 		return nil, err
@@ -71,14 +71,14 @@ func ConstractBytesProposalResponsePayload(chainID string, ccid *pb.ChaincodeID,
 	return presp.Payload, nil
 }
 
-// ConstructSingedTxEnvWithDefaultSigner constructs a transaction envelop for tests with a default signer.
+// ConstructSignedTxEnvWithDefaultSigner constructs a transaction envelop for tests with a default signer.
 // This method helps other modules to construct a transaction with supplied parameters
-func ConstructSingedTxEnvWithDefaultSigner(chainID string, ccid *pb.ChaincodeID, response *pb.Response, simulationResults []byte, txid string, events []byte, visibility []byte) (*common.Envelope, string, error) {
-	return ConstructSingedTxEnv(chainID, ccid, response, simulationResults, txid, events, visibility, signer)
+func ConstructSignedTxEnvWithDefaultSigner(chainID string, ccid *pb.ChaincodeID, response *pb.Response, simulationResults []byte, txid string, events []byte, visibility []byte) (*common.Envelope, string, error) {
+	return ConstructSignedTxEnv(chainID, ccid, response, simulationResults, txid, events, visibility, signer)
 }
 
-// ConstructSingedTxEnv constructs a transaction envelop for tests
-func ConstructSingedTxEnv(chainID string, ccid *pb.ChaincodeID, pResponse *pb.Response, simulationResults []byte, txid string, events []byte, visibility []byte, signer msp.SigningIdentity) (*common.Envelope, string, error) {
+// ConstructSignedTxEnv constructs a transaction envelop for tests
+func ConstructSignedTxEnv(chainID string, ccid *pb.ChaincodeID, pResponse *pb.Response, simulationResults []byte, txid string, events []byte, visibility []byte, signer msp.SigningIdentity) (*common.Envelope, string, error) {
 	ss, err := signer.Serialize()
 	if err != nil {
 		return nil, "", err
@@ -116,12 +116,12 @@ func ConstructSingedTxEnv(chainID string, ccid *pb.ChaincodeID, pResponse *pb.Re
 var mspLcl msp.MSP
 var sigId msp.SigningIdentity
 
-// ConstructUnsingedTxEnv creates a Transaction envelope from given inputs
-func ConstructUnsingedTxEnv(chainID string, ccid *pb.ChaincodeID, response *pb.Response, simulationResults []byte, txid string, events []byte, visibility []byte) (*common.Envelope, string, error) {
+// ConstructUnsignedTxEnv creates a Transaction envelope from given inputs
+func ConstructUnsignedTxEnv(chainID string, ccid *pb.ChaincodeID, response *pb.Response, simulationResults []byte, txid string, events []byte, visibility []byte) (*common.Envelope, string, error) {
 	if mspLcl == nil {
 		mspLcl = mmsp.NewNoopMsp()
 		sigId, _ = mspLcl.GetDefaultSigningIdentity()
 	}
 
-	return ConstructSingedTxEnv(chainID, ccid, response, simulationResults, txid, events, visibility, sigId)
+	return ConstructSignedTxEnv(chainID, ccid, response, simulationResults, txid, events, visibility, sigId)
 }

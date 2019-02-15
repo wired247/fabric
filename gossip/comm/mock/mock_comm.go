@@ -7,6 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 package mock
 
 import (
+	"time"
+
 	"github.com/hyperledger/fabric/gossip/api"
 	"github.com/hyperledger/fabric/gossip/comm"
 	"github.com/hyperledger/fabric/gossip/common"
@@ -52,7 +54,7 @@ type commMock struct {
 	done chan struct{}
 }
 
-var logger = util.GetLogger(util.LoggingMockModule, "")
+var logger = util.GetLogger(util.CommMockLogger, "")
 
 // NewCommMock creates mocked communication object
 func NewCommMock(id string, members map[string]*socketMock) comm.Comm {
@@ -81,6 +83,11 @@ func (packet *packetMock) Respond(msg *proto.GossipMessage) {
 		dst: packet.src,
 		msg: sMsg,
 	}
+}
+
+// Ack returns to the sender an acknowledgement for the message
+func (packet *packetMock) Ack(err error) {
+
 }
 
 // GetSourceEnvelope Returns the Envelope the ReceivedMessage was
@@ -142,6 +149,10 @@ func (mock *commMock) Send(msg *proto.SignedGossipMessage, peers ...*comm.Remote
 			msg: msg,
 		}
 	}
+}
+
+func (mock *commMock) SendWithAck(_ *proto.SignedGossipMessage, _ time.Duration, _ int, _ ...*comm.RemotePeer) comm.AggregatedSendResult {
+	panic("not implemented")
 }
 
 // Probe probes a remote node and returns nil if its responsive,

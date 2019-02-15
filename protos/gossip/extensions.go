@@ -1,17 +1,7 @@
 /*
-Copyright IBM Corp. 2016 All Rights Reserved.
+Copyright IBM Corp. All Rights Reserved.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-		 http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
+SPDX-License-Identifier: Apache-2.0
 */
 
 package gossip
@@ -23,8 +13,10 @@ import (
 	"fmt"
 
 	"github.com/golang/protobuf/proto"
+	"github.com/hyperledger/fabric/common/util"
 	"github.com/hyperledger/fabric/gossip/api"
 	"github.com/hyperledger/fabric/gossip/common"
+	"github.com/hyperledger/fabric/protos/msp"
 )
 
 // NewGossipMessageComparator creates a MessageReplacingPolicy given a maximum number of blocks to hold
@@ -212,6 +204,16 @@ func (m *GossipMessage) IsDataReq() bool {
 	return m.GetDataReq() != nil
 }
 
+// IsPrivateDataMsg returns whether this message is related to private data
+func (m *GossipMessage) IsPrivateDataMsg() bool {
+	return m.GetPrivateReq() != nil || m.GetPrivateRes() != nil || m.GetPrivateData() != nil
+}
+
+// IsAck returns whether this GossipMessage is an acknowledgement
+func (m *GossipMessage) IsAck() bool {
+	return m.GetAck() != nil
+}
+
 // IsDataUpdate returns whether this GossipMessage is a data update message
 func (m *GossipMessage) IsDataUpdate() bool {
 	return m.GetDataUpdate() != nil
@@ -315,7 +317,6 @@ type Signer func(msg []byte) ([]byte, error)
 // to obtain the raw bytes the GossipMessage was un-marshaled from,
 // and the signature over these raw bytes.
 type ReceivedMessage interface {
-
 	// Respond sends a GossipMessage to the origin from which this ReceivedMessage was sent from
 	Respond(msg *GossipMessage)
 
@@ -329,6 +330,11 @@ type ReceivedMessage interface {
 	// GetConnectionInfo returns information about the remote peer
 	// that sent the message
 	GetConnectionInfo() *ConnectionInfo
+
+	// Ack returns to the sender an acknowledgement for the message
+	// An ack can receive an error that indicates that the operation related
+	// to the message has failed
+	Ack(err error)
 }
 
 // ConnectionInfo represents information about
@@ -343,12 +349,6 @@ type ConnectionInfo struct {
 // String returns a string representation of this ConnectionInfo
 func (c *ConnectionInfo) String() string {
 	return fmt.Sprintf("%s %v", c.Endpoint, c.ID)
-}
-
-// IsAuthenticated returns whether the connection to the remote peer
-// was authenticated when the handshake took place
-func (c *ConnectionInfo) IsAuthenticated() bool {
-	return c.Auth != nil
 }
 
 // AuthInfo represents the authentication
@@ -440,6 +440,9 @@ func (m *SignedGossipMessage) IsSigned() bool {
 // SignedGossipMessage out of it.
 // Returns an error if un-marshaling fails.
 func (e *Envelope) ToGossipMessage() (*SignedGossipMessage, error) {
+	if e == nil {
+		return nil, errors.New("nil envelope")
+	}
 	msg := &GossipMessage{}
 	err := proto.Unmarshal(e.Payload, msg)
 	if err != nil {
@@ -487,21 +490,103 @@ type SignedGossipMessage struct {
 	*GossipMessage
 }
 
+// toString of Payload prints Block message: Data and seq
 func (p *Payload) toString() string {
 	return fmt.Sprintf("Block message: {Data: %d bytes, seq: %d}", len(p.Data), p.SeqNum)
 }
 
+// toString of DataUpdate prints Type, items and nonce
 func (du *DataUpdate) toString() string {
 	mType := PullMsgType_name[int32(du.MsgType)]
 	return fmt.Sprintf("Type: %s, items: %d, nonce: %d", mType, len(du.Data), du.Nonce)
 }
 
-func (mr *MembershipResponse) toString() string {
+// ToString of MembershipResponse prints number of Alive and number of Dead
+func (mr *MembershipResponse) ToString() string {
 	return fmt.Sprintf("MembershipResponse with Alive: %d, Dead: %d", len(mr.Alive), len(mr.Dead))
 }
 
+// toString of StateInfoSnapshot prints items
 func (sis *StateInfoSnapshot) toString() string {
 	return fmt.Sprintf("StateInfoSnapshot with %d items", len(sis.Elements))
+}
+
+// toString of MembershipRequest prints self information
+func (mr *MembershipRequest) toString() string {
+	if mr.SelfInformation == nil {
+		return ""
+	}
+	signGM, err := mr.SelfInformation.ToGossipMessage()
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("Membership Request with self information of %s ", signGM.String())
+}
+
+// ToString of Member prints Endpoint and PKI-id
+func (member *Member) ToString() string {
+	return fmt.Sprint("Membership: Endpoint:", member.Endpoint, " PKI-id:", hex.EncodeToString(member.PkiId))
+}
+
+// ToString of AliveMessage prints Alive Message, Identity and Timestamp
+func (am *AliveMessage) ToString() string {
+	if am.Membership == nil {
+		return "nil Membership"
+	}
+	var sI string
+	serializeIdentity := &msp.SerializedIdentity{}
+	if err := proto.Unmarshal(am.Identity, serializeIdentity); err == nil {
+		sI = serializeIdentity.Mspid + string(serializeIdentity.IdBytes)
+	}
+	return fmt.Sprint("Alive Message:", am.Membership.ToString(), "Identity:", sI, "Timestamp:", am.Timestamp)
+}
+
+// toString of StateInfoPullRequest prints Channel MAC
+func (sipr *StateInfoPullRequest) toString() string {
+	return fmt.Sprint("state_info_pull_req: Channel MAC:", hex.EncodeToString(sipr.Channel_MAC))
+}
+
+// toString of StateInfo prints Timestamp and PKI-id
+func (si *StateInfo) toString() string {
+	return fmt.Sprint("state_info_message: Timestamp:", si.Timestamp, "PKI-id:", hex.EncodeToString(si.PkiId),
+		" channel MAC:", hex.EncodeToString(si.Channel_MAC), " properties:", si.Properties)
+}
+
+// formatDigests formats digest byte arrays into strings depending on the message type
+func formatDigests(msgType PullMsgType, givenDigests [][]byte) []string {
+	var digests []string
+	switch msgType {
+	case PullMsgType_BLOCK_MSG:
+		for _, digest := range givenDigests {
+			digests = append(digests, string(digest))
+		}
+	case PullMsgType_IDENTITY_MSG:
+		for _, digest := range givenDigests {
+			digests = append(digests, hex.EncodeToString(digest))
+		}
+
+	}
+	return digests
+}
+
+// toString of DataDigest prints nonce, msg_type and digests
+func (dig *DataDigest) toString() string {
+	var digests []string
+	digests = formatDigests(dig.MsgType, dig.Digests)
+	return fmt.Sprintf("data_dig: nonce: %d , Msg_type: %s, digests: %v", dig.Nonce, dig.MsgType, digests)
+}
+
+// toString of DataRequest prints nonce, msg_type and digests
+func (dataReq *DataRequest) toString() string {
+	var digests []string
+	digests = formatDigests(dataReq.MsgType, dataReq.Digests)
+	return fmt.Sprintf("data request: nonce: %d , Msg_type: %s, digests: %v", dataReq.Nonce, dataReq.MsgType, digests)
+}
+
+// toString of LeadershipMessage prints PKI-id, Timestamp and Is Declaration
+func (lm *LeadershipMessage) toString() string {
+	return fmt.Sprint("Leadership Message: PKI-id:", hex.EncodeToString(lm.PkiId), " Timestamp:", lm.Timestamp,
+		"Is Declaration ", lm.IsDeclaration)
 }
 
 // String returns a string representation
@@ -528,9 +613,25 @@ func (m *SignedGossipMessage) String() string {
 			update := m.GetDataUpdate()
 			gMsg = fmt.Sprintf("DataUpdate: %s", update.toString())
 		} else if m.GetMemRes() != nil {
-			gMsg = m.GetMemRes().toString()
+			gMsg = m.GetMemRes().ToString()
 		} else if m.IsStateInfoSnapshot() {
 			gMsg = m.GetStateSnapshot().toString()
+		} else if m.GetPrivateRes() != nil {
+			gMsg = m.GetPrivateRes().ToString()
+		} else if m.GetAliveMsg() != nil {
+			gMsg = m.GetAliveMsg().ToString()
+		} else if m.GetMemReq() != nil {
+			gMsg = m.GetMemReq().toString()
+		} else if m.GetStateInfoPullReq() != nil {
+			gMsg = m.GetStateInfoPullReq().toString()
+		} else if m.GetStateInfo() != nil {
+			gMsg = m.GetStateInfo().toString()
+		} else if m.GetDataDig() != nil {
+			gMsg = m.GetDataDig().toString()
+		} else if m.GetDataReq() != nil {
+			gMsg = m.GetDataReq().toString()
+		} else if m.GetLeadershipMsg() != nil {
+			gMsg = m.GetLeadershipMsg().toString()
 		} else {
 			gMsg = m.GossipMessage.String()
 			isSimpleMsg = true
@@ -547,22 +648,58 @@ func (dd *DataRequest) FormattedDigests() []string {
 	if dd.MsgType == PullMsgType_IDENTITY_MSG {
 		return digestsToHex(dd.Digests)
 	}
-	return dd.Digests
+
+	return digestsAsStrings(dd.Digests)
 }
 
 func (dd *DataDigest) FormattedDigests() []string {
 	if dd.MsgType == PullMsgType_IDENTITY_MSG {
 		return digestsToHex(dd.Digests)
 	}
-	return dd.Digests
+	return digestsAsStrings(dd.Digests)
 }
 
-func digestsToHex(digests []string) []string {
+// Hash returns the SHA256 representation of the PvtDataDigest's bytes
+func (dig *PvtDataDigest) Hash() (string, error) {
+	b, err := proto.Marshal(dig)
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(util.ComputeSHA256(b)), nil
+}
+
+// ToString returns a string representation of this RemotePvtDataResponse
+func (res *RemotePvtDataResponse) ToString() string {
+	a := make([]string, len(res.Elements))
+	for i, el := range res.Elements {
+		a[i] = fmt.Sprintf("%s with %d elements", el.Digest.String(), len(el.Payload))
+	}
+	return fmt.Sprintf("%v", a)
+}
+
+func digestsAsStrings(digests [][]byte) []string {
 	a := make([]string, len(digests))
 	for i, dig := range digests {
-		a[i] = hex.EncodeToString([]byte(dig))
+		a[i] = string(dig)
 	}
 	return a
+}
+
+func digestsToHex(digests [][]byte) []string {
+	a := make([]string, len(digests))
+	for i, dig := range digests {
+		a[i] = hex.EncodeToString(dig)
+	}
+	return a
+}
+
+// LedgerHeight returns the ledger height that is specified
+// in the StateInfo message
+func (msg *StateInfo) LedgerHeight() (uint64, error) {
+	if msg.Properties != nil {
+		return msg.Properties.LedgerHeight, nil
+	}
+	return 0, errors.New("properties undefined")
 }
 
 // Abs returns abs(a-b)

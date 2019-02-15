@@ -10,7 +10,6 @@ import (
 	"crypto/rand"
 	"errors"
 	"testing"
-
 	"time"
 
 	"github.com/spf13/viper"
@@ -25,6 +24,11 @@ func testHappyPath(t *testing.T) {
 	n3 := RandomUInt64()
 	n4 := RandomUInt64()
 	assert.NotEqual(t, n3, n4)
+}
+
+func TestContains(t *testing.T) {
+	assert.True(t, Contains("foo", []string{"bar", "foo", "baz"}))
+	assert.False(t, Contains("foo", []string{"bar", "baz"}))
 }
 
 func TestGetRandomInt(t *testing.T) {
@@ -119,4 +123,9 @@ func TestSet(t *testing.T) {
 	assert.True(t, s.Exists(42))
 	s.Clear()
 	assert.False(t, s.Exists(42))
+}
+
+func TestStringsToBytesToStrings(t *testing.T) {
+	strings := []string{"foo", "bar"}
+	assert.Equal(t, strings, BytesToStrings(StringsToBytes(strings)))
 }

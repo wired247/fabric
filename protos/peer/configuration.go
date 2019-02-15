@@ -19,10 +19,9 @@ package peer
 import (
 	"fmt"
 
+	"github.com/golang/protobuf/proto"
 	"github.com/hyperledger/fabric/protos/common"
 	"github.com/hyperledger/fabric/protos/msp"
-
-	"github.com/golang/protobuf/proto"
 )
 
 func init() {
@@ -99,6 +98,10 @@ func (ccv *DynamicApplicationConfigValue) VariablyOpaqueFieldProto(name string) 
 		return nil, fmt.Errorf("Not a marshaled field: %s", name)
 	}
 	switch ccv.name {
+	case "Capabilities":
+		return &common.Capabilities{}, nil
+	case "ACLs":
+		return &ACLs{}, nil
 	default:
 		return nil, fmt.Errorf("Unknown Application ConfigValue name: %s", ccv.name)
 	}

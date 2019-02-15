@@ -35,6 +35,9 @@ func ExtractSignedCCDepSpec(env *common.Envelope) (*common.ChannelHeader, *peer.
 	if err != nil {
 		return nil, nil, err
 	}
+	if p.Header == nil {
+		return nil, nil, errors.New("channel header cannot be nil")
+	}
 	ch := &common.ChannelHeader{}
 	err = proto.Unmarshal(p.Header.ChannelHeader, ch)
 	if err != nil {
@@ -150,6 +153,7 @@ func CreateSignedCCDepSpecForInstall(pack []*common.Envelope) (*common.Envelope,
 			baseCip = cip
 			//if it has endorsement, all other owners should have signed too
 			if len(cip.OwnerEndorsements) > 0 {
+				endorsementExists = true
 				endorsements = make([]*peer.Endorsement, len(pack))
 			}
 

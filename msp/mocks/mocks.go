@@ -18,6 +18,10 @@ type MockMSP struct {
 	mock.Mock
 }
 
+func (m *MockMSP) IsWellFormed(_ *pmsp.SerializedIdentity) error {
+	return nil
+}
+
 func (m *MockMSP) DeserializeIdentity(serializedIdentity []byte) (msp.Identity, error) {
 	args := m.Called(serializedIdentity)
 	return args.Get(0).(msp.Identity), args.Error(1)
@@ -26,6 +30,11 @@ func (m *MockMSP) DeserializeIdentity(serializedIdentity []byte) (msp.Identity, 
 func (m *MockMSP) Setup(config *pmsp.MSPConfig) error {
 	args := m.Called(config)
 	return args.Error(0)
+}
+
+func (m *MockMSP) GetVersion() msp.MSPVersion {
+	args := m.Called()
+	return args.Get(0).(msp.MSPVersion)
 }
 
 func (m *MockMSP) GetType() msp.ProviderType {
@@ -74,6 +83,10 @@ type MockIdentity struct {
 	ID string
 }
 
+func (m *MockIdentity) Anonymous() bool {
+	panic("implement me")
+}
+
 func (m *MockIdentity) ExpiresAt() time.Time {
 	panic("implement me")
 }
@@ -87,8 +100,8 @@ func (*MockIdentity) GetMSPIdentifier() string {
 	panic("implement me")
 }
 
-func (*MockIdentity) Validate() error {
-	panic("implement me")
+func (m *MockIdentity) Validate() error {
+	return m.Called().Error(0)
 }
 
 func (*MockIdentity) GetOrganizationalUnits() []*msp.OUIdentifier {
@@ -103,8 +116,8 @@ func (*MockIdentity) Serialize() ([]byte, error) {
 	panic("implement me")
 }
 
-func (*MockIdentity) SatisfiesPrincipal(principal *pmsp.MSPPrincipal) error {
-	panic("implement me")
+func (m *MockIdentity) SatisfiesPrincipal(principal *pmsp.MSPPrincipal) error {
+	return m.Called(principal).Error(0)
 }
 
 type MockSigningIdentity struct {

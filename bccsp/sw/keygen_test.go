@@ -28,6 +28,8 @@ import (
 )
 
 func TestKeyGen(t *testing.T) {
+	t.Parallel()
+
 	expectedOpts := &mocks2.KeyGenOpts{EphemeralValue: true}
 	expectetValue := &mocks2.MockKey{}
 	expectedErr := errors.New("Expected Error")
@@ -38,7 +40,7 @@ func TestKeyGen(t *testing.T) {
 		Value:   expectetValue,
 		Err:     expectedErr,
 	}
-	csp := impl{keyGenerators: keyGenerators}
+	csp := CSP{KeyGenerators: keyGenerators}
 	value, err := csp.KeyGen(expectedOpts)
 	assert.Nil(t, value)
 	assert.Contains(t, err.Error(), expectedErr.Error())
@@ -49,13 +51,15 @@ func TestKeyGen(t *testing.T) {
 		Value:   expectetValue,
 		Err:     nil,
 	}
-	csp = impl{keyGenerators: keyGenerators}
+	csp = CSP{KeyGenerators: keyGenerators}
 	value, err = csp.KeyGen(expectedOpts)
 	assert.Equal(t, expectetValue, value)
 	assert.Nil(t, err)
 }
 
 func TestECDSAKeyGenerator(t *testing.T) {
+	t.Parallel()
+
 	kg := &ecdsaKeyGenerator{curve: elliptic.P256()}
 
 	k, err := kg.KeyGen(nil)
@@ -68,6 +72,8 @@ func TestECDSAKeyGenerator(t *testing.T) {
 }
 
 func TestRSAKeyGenerator(t *testing.T) {
+	t.Parallel()
+
 	kg := &rsaKeyGenerator{length: 512}
 
 	k, err := kg.KeyGen(nil)
@@ -80,6 +86,8 @@ func TestRSAKeyGenerator(t *testing.T) {
 }
 
 func TestAESKeyGenerator(t *testing.T) {
+	t.Parallel()
+
 	kg := &aesKeyGenerator{length: 32}
 
 	k, err := kg.KeyGen(nil)
@@ -92,6 +100,8 @@ func TestAESKeyGenerator(t *testing.T) {
 }
 
 func TestAESKeyGeneratorInvalidInputs(t *testing.T) {
+	t.Parallel()
+
 	kg := &aesKeyGenerator{length: -1}
 
 	_, err := kg.KeyGen(nil)
@@ -100,6 +110,8 @@ func TestAESKeyGeneratorInvalidInputs(t *testing.T) {
 }
 
 func TestRSAKeyGeneratorInvalidInputs(t *testing.T) {
+	t.Parallel()
+
 	kg := &rsaKeyGenerator{length: -1}
 
 	_, err := kg.KeyGen(nil)
